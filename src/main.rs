@@ -1,31 +1,39 @@
-
 #![feature(fixed_size_array)]
 
 extern crate core;
 
 use core::array::FixedSizeArray;
-use std::cell::UnsafeCell;
+use std::cell::{UnsafeCell, Cell};
+use std::ops::{Deref, DerefMut};
+use std::marker::PhantomData;
+use std::ptr;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct ChildId {
     index: Option<usize>
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct InvalidChildIndex(pub usize);
+
 struct Node<T, C: FixedSizeArray<ChildId>> {
-    data: UnsafeCell<T>,
+    user_data: T,
     parent: Option<usize>,
-    children: C,
+    children: C
 }
 
-/// A tree, stored in a constant number of contiguous memory blocks, in order to increase
-/// cache performance. Generic over element type and branch factor.
+type NodeElem<T, C> = UnsafeCell<Option<Node<T, C>>>;
+
 pub struct Tree<T, C: FixedSizeArray<ChildId>> {
-    nodes: Vec<Option<Node<T, C>>>,
+    nodes: Vec<NodeElem<T, C>>,
     root: Option<usize>,
     garbage: Vec<usize>,
 }
+
+unsafe impl<T: Send, C: FixedSizeArray<ChildId>> Send for Tree<T, C> {}
+unsafe impl<T: Sync, C: FixedSizeArray<ChildId>> Sync for Tree<T, C> {}
+
 impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
-    /// Construct a new, empty tree.
     pub fn new() -> Self {
         Tree {
             nodes: Vec::new(),
@@ -34,119 +42,114 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
-    /// Remove nodes which are marked as garbage, which requires changing indices to maintain
-    /// the integrity of parent/child relationships.
-    pub fn compact(&mut self) {
-        unimplemented!()
-    }
-
-    pub fn root(&self) -> OptionNodeGuard<T, C> {
-        unimplemented!()
-    }
-
+    //pub fn garbage_collect(&mut self) {
+    //    unimplemented!()
+    //}
+//
+    //pub fn read_root(&'a self) -> Option<>
 }
 
-/// A guard for immutably accessing a node and its children, even if the node does not exist.
-pub struct OptionNodeGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
-    tree: &'tree Tree<T, C>,
-    node: Option<&'node Node<T, C>>,
-}
-impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> OptionNodeGuard<'tree, 'node, T, C> {
-    pub fn as_option(&self) -> Option<NodeGuard<'tree, 'node, T, C>> {
-        self.node.map(|node| NodeGuard {
-            tree: self.tree,
-            node
-        })
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct InvalidChildIndex(pub usize);
-
-/// A guard for immutably accessing a node and its children.
 pub struct NodeGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
+
+}
+
+/*
+pub struct NodeReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
-    node: &'node Node<T, C>,
+    node: &'tree Node<T, C>,
 }
-impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeGuard<'tree, 'node, T, C> {
-    /// Get the tree this node belongs to.
-    pub fn tree(&self) -> &'tree Tree<T, C> {
-        self.tree
+impl<'tree, T, C: FixedSizeArray<ChildId>> Deref for NodeReadGuard<'tree, T, C> {
+    type Target = T;
+
+    fn deref(&self) -> &<Self as Deref>::Target {
+        unsafe {
+            &(&*self.node_pointer).user_data
+        }
+    }
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> NodeReadGuard<'tree, T, C> {
+    pub fn new(tree: &'tree Tree<T, C>, index: usize) -> Self {
+        let mut guard = NodeReadGuard {
+            tree,
+            node: unsafe {
+                (&*tree.nodes[index].get()).as_ref().unwrap()
+            },
+        };
     }
 
-    /// Get this node's data.
-    pub fn data(&self) -> &'node T {
+    pub fn child(&self, branch: usize) -> Option<NodeReadGuard<'tree, T, C>> {
+        unimplemented!()
+    }
+}
+
+pub struct NodeWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
+    tree: &'tree mut Tree<T, C>,
+    index: usize,
+    node_pointer: *mut Node<T, C>,
+    node_lifetime: PhantomData<&'node mut ()>,
+}
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> Deref for NodeWriteGuard<'tree, 'node, T, C> {
+    type Target = T;
+
+    fn deref(&self) -> &<Self as Deref>::Target {
         unsafe {
-            &*self.node.data.get()
+            &(&*self.node_pointer).user_data
+        }
+    }
+}
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> DerefMut for NodeWriteGuard<'tree, 'node, T, C> {
+    fn deref_mut(&mut self) -> &mut <Self as Deref>::Target {
+        unsafe {
+            &mut(&mut*self.node_pointer).user_data
+        }
+    }
+}
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T, C> {
+    fn new(tree: &'tree mut Tree<T, C>, index: usize) -> Self {
+        let mut guard = NodeWriteGuard {
+            tree,
+            index,
+            node_pointer: ptr::null_mut(),
+            node_lifetime: PhantomData,
+        };
+        guard.refresh_pointer();
+        guard
+    }
+
+    fn refresh_pointer(&mut self) {
+        unsafe {
+            self.node_pointer = (&mut*self.tree.nodes[self.index].get()).as_mut().unwrap();
         }
     }
 
-    /// Get a child of this node in the form of an `OptionNodeGuard`.
-    pub fn child<'s>(&self, index: usize) -> Result<OptionNodeGuard<'tree, 's, T, C>, InvalidChildIndex> {
-        self.node.children.as_slice()
-            .get(index)
-            .ok_or(InvalidChildIndex(index))
-            .map(|child_id| OptionNodeGuard {
-                tree: self.tree,
-                node: child_id.index
-                    .map(|i| (&self.tree.nodes[i])
-                        .as_ref()
-                        .unwrap())
-            })
-    }
-}
+    // TODO: ideally, we'd have the node write guard be able to guard the lack of a node
+    // TODO: and it could replace itself
 
-/// A guard for mutably accessing a node and its children, even if the node does not exist.
-pub struct OptionNodeGuardMut<'a, T, C: FixedSizeArray<ChildId>> {
-    tree: &'a mut Tree<T, C>,
-    node: Option<&'a mut Node<T, C>>
-}
-impl<'a, T, C: FixedSizeArray<ChildId>> OptionNodeGuardMut<'a, T, C> {
-    pub fn as_option(&mut self) -> Option<NodeGuardMut<'a, T, C>> {
-        self.node.map(|node| NodeGuardMut {
-            tree: self.tree,
-            node
-        })
-    }
-}
+    how to update a node and, in doing so, access its children
 
-/// A guard for mutable accessing a node and its children.
-pub struct NodeGuardMut<'a, T, C: FixedSizeArray<ChildId>> {
-    tree: &'a mut Tree<T, C>,
-    node: &'a mut Node<T, C>
-}
-impl<'a, T, C: FixedSizeArray<ChildId>> NodeGuardMut<'a, T, C> {
-    /// Get the tree this node belongs to.
-    pub fn tree(&mut self) -> &mut Tree<T, C> {
-        self.tree
+    pub fn read_child<'s>(&'s self, branch: usize) -> Option<NodeReadGuard<'s, T, C>> {
+        unimplemented!()
     }
 
-    /// Get this node's data.
-    pub fn data(&mut self) -> &mut T {
-        unsafe {
-            &mut*self.node.data.get()
-        }
+    pub fn child<'s>(&'s mut self, branch: usize) -> Option<NodeWriteGuard<'tree, 's, T, C>> {
+        unimplemented!()
     }
 
-    /// Get a child of this node in the form of an `OptionNodeGuardMut`.
-    pub fn child(&mut self, index: usize) -> OptionNodeGuardMut<'a, T, C> {
-        self.node.children.as_slice()
-            .get(index)
-            .ok_or(InvalidChildIndex(index))
-            .map(|child_id| OptionNodeGuard {
-                tree: self.tree,
-                node: child_id.index
-                    .map(|i| (&mut self.tree.nodes[i])
-                        .as_ref_mut()
-                        .unwrap())
-            })
+    pub fn replace_child(&mut self, branch: usize, replacment: Option<T>) -> Option<T> {
+        unimplemented!()
+    }
+
+    pub fn update_child(&mut self, branch: usize, updater: impl FnOnce(Option<T>) -> Option<T>) {
+        unimplemented!()
+    }
+
+    pub fn update_derive_child<O>(&mut self, branch: usize,
+                                  updater: impl FnOnce(Option<T>) -> (Option<T>, O)) -> O {
+        unimplemented!()
     }
 }
-
-
-// TODO: if a node is marked as garbage, then all its children should be garbage collected
-// TODO: implement debug
+*/
 
 fn main() {
-    println!("Hello, world!");
+    println!("hello world");
 }
