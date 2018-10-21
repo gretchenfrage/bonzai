@@ -33,14 +33,14 @@ enum ParentId {
 }
 
 pub struct Tree<T, C: FixedSizeArray<ChildId>> {
-    nodes: Vec<UnsafeCell<Node<T, C>>>,
+    nodes: UnsafeCell<Vec<UnsafeCell<Node<T, C>>>>,
     root: Option<usize>,
     garbage: Vec<usize>,
 }
 impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
     pub fn new() -> Self {
         Tree {
-            nodes: Vec::new(),
+            nodes: UnsafeCell::new(Vec::new()),
             root: None,
             garbage: Vec::new()
         }
@@ -70,10 +70,11 @@ unsafe impl<T: Send, C: FixedSizeArray<ChildId>> Send for Tree<T, C> {}
 unsafe impl<T: Sync, C: FixedSizeArray<ChildId>> Sync for Tree<T, C> {}
 
 pub struct NodeWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
-    tree: &'tree mut Tree<T, C>,
+    tree: &'tree Tree<T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
+    p2: PhantomData<&'tree mut ()>,
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T, C> {
     pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildGuard<'tree, 'child, T, C>) {
@@ -82,12 +83,14 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
                 ref elem,
                 ref children,
                 ..
-            } = &*self.tree.nodes[self.index].get() {
+            } = &*(&*self.tree.nodes.get())[self.index].get() {
                 let elem: &'child mut T = &mut*elem.get();
                 let children: &'child mut C = &mut*children.get();
                 let child_guard: ChildGuard<'tree, 'child, T, C> = ChildGuard {
                     tree: self.tree,
-                    children
+                    children,
+
+                    p1: PhantomData,
                 };
                 (elem, child_guard)
             } else {
@@ -98,9 +101,11 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
 }
 
 pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
-    tree: &'tree mut Tree<T, C>,
+    tree: &'tree Tree<T, C>,
     index: usize,
     reattached: bool,
+
+    p1: PhantomData<&'tree mut ()>,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
     pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildGuard<'tree, 'child, T, C>) {
@@ -109,12 +114,14 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
                 ref elem,
                 ref children,
                 ..
-            } = &*self.tree.nodes[self.index].get() {
+            } = &*(&*self.tree.nodes.get())[self.index].get() {
                 let elem: &'child mut T = &mut*elem.get();
                 let children: &'child mut C = &mut*children.get();
                 let child_guard: ChildGuard<'tree, 'child, T, C> = ChildGuard {
                     tree: self.tree,
-                    children
+                    children,
+
+                    p1: PhantomData,
                 };
                 (elem, child_guard)
             } else {
@@ -130,8 +137,10 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> 
 }
 
 pub struct ChildGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
-    tree: &'tree mut Tree<T, C>,
+    tree: &'tree Tree<T, C>,
     children: &'node mut C,
+
+    p1: PhantomData<&'tree mut ()>,
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node, T, C> {
     pub fn write_child<'child>(&'child mut self, branch: usize)
@@ -145,7 +154,8 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node
                     tree: self.tree,
                     index: child_index,
 
-                    p1: PhantomData
+                    p1: PhantomData,
+                    p2: PhantomData,
                 }))
     }
 
@@ -162,7 +172,7 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node
                         if let &Node::Present {
                             ref parent,
                             ..
-                        } = &*self.tree.nodes[child_index].get() {
+                        } = &*(&*self.tree.nodes.get())[child_index].get() {
                             parent.set(ParentId::Detached);
                         } else {
                             unreachable!("child index points to garbage");
@@ -179,6 +189,8 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node
                         tree: self.tree,
                         index: child_index,
                         reattached: false,
+
+                        p1: PhantomData
                     }
                 })
             )
