@@ -34,6 +34,18 @@ enum ParentId {
     Detached,
 }
 
+fn new_child_array<C: FixedSizeArray<ChildId>>() -> C {
+    unsafe {
+        let mut children: C = mem::uninitialized();
+        for child_ref in children.as_mut_slice() {
+            ptr::write(child_ref, ChildId {
+                index: None
+            });
+        }
+        children
+    }
+}
+
 pub struct Tree<T, C: FixedSizeArray<ChildId>> {
     nodes: UnsafeCell<Vec<UnsafeCell<Node<T, C>>>>,
     root: Option<usize>,
@@ -49,19 +61,115 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
     }
 
     pub fn write_root<'tree>(&'tree mut self) -> Option<NodeWriteGuard<'tree, 'tree, T, C>> {
-        unimplemented!()
+        let self_immutable: &Self = self;
+
+        self_immutable.root
+            .map(|root_index| NodeWriteGuard {
+                tree: self_immutable,
+                index: root_index,
+
+                p1: PhantomData,
+                p2: PhantomData,
+            })
     }
 
     pub fn take_root<'tree>(&'tree mut self) -> Option<NodeOwnedGuard<'tree, T, C>> {
-        unimplemented!()
+        self.root
+            .map(move |root_index| {
+                // detach the parent
+                unsafe {
+                    if let &Node::Present {
+                        ref parent,
+                        ..
+                    } = &*(&*self.nodes.get())[root_index].get() {
+                        debug_assert_eq!(parent.get(), ParentId::Root);
+                        parent.set(ParentId::Detached);
+                    } else {
+                        unreachable!("root index points to garbage");
+                    }
+                }
+
+                // detach the root
+                self.root = None;
+
+                // create the guard
+                NodeOwnedGuard {
+                    tree: self,
+                    index: root_index,
+                    reattached: false,
+
+                    p1: PhantomData,
+                }
+            })
     }
 
-    pub fn put_root_elem(&mut self, elem: T) {
-        unimplemented!()
+    unsafe fn delete_root(&mut self, nodes_vec: &mut Vec<UnsafeCell<Node<T, C>>>) -> bool {
+        if let Some(former_root_index) = self.root {
+            *(&mut*nodes_vec[former_root_index].get()) = Node::Garbage;
+            (&mut*self.garbage.get()).push(former_root_index);
+            true
+        } else {
+            false
+        }
     }
 
-    pub fn put_root_tree<'tree>(&'tree mut self, tree: NodeOwnedGuard<'tree, T, C>) {
-        unimplemented!()
+    pub fn put_root_elem(&mut self, elem: T) -> bool {
+        unsafe {
+            // unsafely create the new children array
+            let child_children: C = new_child_array();
+
+            // create the new node
+            let child_node = Node::Present {
+                elem: UnsafeCell::new(elem),
+                parent: Cell::new(ParentId::Root),
+                children: UnsafeCell::new(child_children),
+            };
+
+            let nodes_vec = &mut*self.nodes.get();
+
+            // insert it into the nodes vector, get the index
+            nodes_vec.push(UnsafeCell::new(child_node));
+            let child_index = nodes_vec.len() - 1;
+
+            // mark any existing root as garbage
+            let deleted = self.delete_root(nodes_vec);
+
+            // attach the root
+            self.root = Some(child_index);
+
+            // done
+            deleted
+        }
+    }
+
+    pub fn put_root_tree<'tree>(&'tree mut self, mut subtree: NodeOwnedGuard<'tree, T, C>) -> bool {
+        unsafe {
+            let nodes_vec = &mut*self.nodes.get();
+
+            // mark any existing root as garbage
+            let deleted = self.delete_root(nodes_vec);
+
+            // attach the root
+            self.root = Some(subtree.index);
+
+            // attach the parent
+            if let &Node::Present {
+                ref parent,
+                ..
+            } = &*nodes_vec[subtree.index].get() {
+                debug_assert_eq!(parent.get(), ParentId::Detached);
+                parent.set(ParentId::Root);
+            } else {
+                unreachable!("put root tree references garbage");
+            }
+
+            // drop the NodeOwnedGuard without triggering it to mark the node as garbage
+            subtree.reattached = true;
+            mem::drop(subtree);
+
+            // done
+            deleted
+        }
     }
 
     pub fn garbage_collect(&mut self) {
@@ -138,7 +246,11 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> {
     fn drop(&mut self) {
-        unimplemented!()
+        if !self.reattached {
+            unsafe {
+                *(&mut*((&(&*(self.tree.nodes.get()))[self.index]).get())) = Node::Garbage;
+            }
+        }
     }
 }
 
@@ -225,15 +337,7 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node
             }
 
             // unsafely create the new children array
-            let child_children: C = {
-                let mut children: C = mem::uninitialized();
-                for child_ref in children.as_mut_slice() {
-                    ptr::write(child_ref, ChildId {
-                        index: None
-                    });
-                }
-                children
-            };
+            let child_children: C = new_child_array();
 
             // create the new node
             let child_node = Node::Present {
@@ -289,7 +393,7 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node
                 unreachable!("put child tree references garbage");
             }
 
-            // drop to NodeOwnedGuard without triggering it to mark the node as garbage
+            // drop the NodeOwnedGuard without triggering it to mark the node as garbage
             subtree.reattached = true;
             mem::drop(subtree);
 
