@@ -6,7 +6,7 @@ extern crate core;
 
 use core::array::FixedSizeArray;
 use std::cell::{UnsafeCell, Cell};
-use std::ops::Drop;
+use std::ops::{Deref, Drop};
 use std::marker::PhantomData;
 use std::ptr;
 use std::mem;
@@ -73,6 +73,13 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
 
                 p1: PhantomData,
                 p2: PhantomData,
+            })
+    }
+
+    pub fn read_root<'tree>(&'tree self) -> Option<NodeReadGuard<'tree, T, C>> {
+        self.root
+            .map(|root_index| unsafe {
+                NodeReadGuard::new(self, root_index)
             })
     }
 
@@ -183,8 +190,7 @@ unsafe impl<T: Send, C: FixedSizeArray<ChildId>> Send for Tree<T, C> {}
 unsafe impl<T: Sync, C: FixedSizeArray<ChildId>> Sync for Tree<T, C> {}
 impl<T: Debug, C: FixedSizeArray<ChildId>> Debug for Tree<T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        // TODO: bad and wrong
-        unsafe { mem::transmute::<&Self, &mut Self>(self).write_root().fmt(f) }
+        self.read_root().fmt(f)
     }
 }
 
@@ -196,7 +202,13 @@ pub struct NodeWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
     p2: PhantomData<&'tree mut ()>,
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T, C> {
-    pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildGuard<'tree, 'child, T, C>) {
+    pub fn read(&self) -> NodeReadGuard<'tree, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.tree, self.index)
+        }
+    }
+
+    pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildWriteGuard<'tree, 'child, T, C>) {
         unsafe {
             if let &Node::Present {
                 ref elem,
@@ -205,7 +217,7 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
             } = &*(&*self.tree.nodes.get())[self.index].get() {
                 let elem: &'child mut T = &mut*elem.get();
                 let children: &'child mut C = &mut*children.get();
-                let child_guard: ChildGuard<'tree, 'child, T, C> = ChildGuard {
+                let child_guard: ChildWriteGuard<'tree, 'child, T, C> = ChildWriteGuard {
                     tree: self.tree,
                     index: self.index,
                     children,
@@ -223,17 +235,7 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuar
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'tree, 'node, T, C> {}
 impl<'tree, 'node: 'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuard<'tree, 'node, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        // TODO: don't transmute imut to mut, that's bad and wrong and illegal
-        // TODO: but in this case, it should work for now
-        let (elem, mut children) = unsafe { mem::transmute::<&Self, &mut Self>(self).split() };
-        let mut builder = f.debug_struct("Node");
-        builder.field("elem", elem);
-        let num_children = children.children.as_slice().len();
-        for b in 0..num_children {
-            let child = children.write_child(b).unwrap();
-            builder.field(&format!("child_{}", b), &child);
-        }
-        builder.finish()
+        self.read().fmt(f)
     }
 }
 
@@ -245,7 +247,13 @@ pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     p1: PhantomData<&'tree mut ()>,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
-    pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildGuard<'tree, 'child, T, C>) {
+    pub fn read(&self) -> NodeReadGuard<'tree, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.tree, self.index)
+        }
+    }
+
+    pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildWriteGuard<'tree, 'child, T, C>) {
         unsafe {
             if let &Node::Present {
                 ref elem,
@@ -254,7 +262,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
             } = &*(&*self.tree.nodes.get())[self.index].get() {
                 let elem: &'child mut T = &mut*elem.get();
                 let children: &'child mut C = &mut*children.get();
-                let child_guard: ChildGuard<'tree, 'child, T, C> = ChildGuard {
+                let child_guard: ChildWriteGuard<'tree, 'child, T, C> = ChildWriteGuard {
                     tree: self.tree,
                     index: self.index,
                     children,
@@ -279,15 +287,20 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> 
         }
     }
 }
+impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeOwnedGuard<'tree, T, C> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        self.read().fmt(f)
+    }
+}
 
-pub struct ChildGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
+pub struct ChildWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
     index: usize,
     children: &'node mut C,
 
     p1: PhantomData<&'tree mut ()>,
 }
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node, T, C> {
+impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, T, C> {
     pub fn write_child<'this, 'child: 'this>(&'this mut self, branch: usize)
         -> Result<Option<NodeWriteGuard<'tree, 'child, T, C>>, InvalidBranchIndex> {
 
@@ -428,8 +441,73 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node
         }
     }
 }
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for ChildGuard<'tree, 'node, T, C> {}
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for ChildGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for ChildWriteGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuard<'tree, 'node, T, C> {}
+
+pub struct NodeReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
+    tree: &'tree Tree<T, C>,
+    index: usize,
+    node: &'tree Node<T, C>,
+    pub elem: &'tree T,
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> Deref for NodeReadGuard<'tree, T, C> {
+    type Target = T;
+
+    fn deref(&self) -> &<Self as Deref>::Target {
+        self.elem
+    }
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> NodeReadGuard<'tree, T, C> {
+    unsafe fn new(tree: &'tree Tree<T, C>, index: usize) -> Self {
+        let node = &*(&*tree.nodes.get())[index].get();
+        let elem = match node {
+            &Node::Present {
+                ref elem,
+                ..
+            } => &*elem.get(),
+            &Node::Garbage => unreachable!("new node read guard from garbage"),
+        };
+        NodeReadGuard {
+            tree,
+            index,
+            node,
+            elem
+        }
+    }
+
+    pub fn child(&self, branch: usize) -> Result<Option<Self>, InvalidBranchIndex> {
+        if let &Node::Present {
+            ref children,
+            ..
+        } = self.node {
+            unsafe {
+                (&*children.get()).as_slice().get(branch)
+                    .ok_or(InvalidBranchIndex(branch))
+                    .map(|child_id| child_id.index
+                        .map(|child_index| Self::new(self.tree, child_index)))
+            }
+        } else {
+            unreachable!("read guard on garbage node")
+        }
+    }
+}
+impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree, T, C> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        let mut builder = f.debug_struct("Node");
+        builder.field("elem", self.elem);
+        let num_children = match self.node {
+            &Node::Present {
+                ref children,
+                ..
+            } => unsafe { (&*children.get()).as_slice().len() },
+            &Node::Garbage => unreachable!("node read guard on garbage"),
+        };
+        for branch in 0..num_children {
+            builder.field(&format!("child_{}", branch), &self.child(branch));
+        }
+        builder.finish()
+    }
+}
 
 // TODO: read-only access
 // TODO: creation of a detached node which was never attached
