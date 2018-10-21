@@ -14,7 +14,7 @@ pub struct ChildId {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct InvalidChildIndex(pub usize);
+pub struct InvalidBranchIndex(pub usize);
 
 enum Node<T, C: FixedSizeArray<ChildId>> {
     Garbage,
@@ -66,6 +66,8 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         unimplemented!()
     }
 }
+unsafe impl<T: Send, C: FixedSizeArray<ChildId>> Send for Tree<T, C> {}
+unsafe impl<T: Sync, C: FixedSizeArray<ChildId>> Sync for Tree<T, C> {}
 
 pub struct NodeWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree mut Tree<T, C>,
@@ -98,6 +100,7 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
 pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree mut Tree<T, C>,
     index: usize,
+    reattached: bool,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
     pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildGuard<'tree, 'child, T, C>) {
@@ -115,7 +118,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
                 };
                 (elem, child_guard)
             } else {
-                unreachable!("guarding garbage")
+                unreachable!("write-guarding garbage")
             }
         }
     }
@@ -132,25 +135,65 @@ pub struct ChildGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node, T, C> {
     pub fn write_child<'child>(&'child mut self, branch: usize)
-        -> Result<Option<NodeWriteGuard<'tree, 'child, T, C>>, InvalidChildIndex> {
+        -> Result<Option<NodeWriteGuard<'tree, 'child, T, C>>, InvalidBranchIndex> {
 
-        unimplemented!()
+        self.children.as_slice().get(branch)
+            .ok_or(InvalidBranchIndex(branch))
+            .map(|child_id| child_id.index)
+            .map(|child_index| child_index
+                .map(move |child_index| NodeWriteGuard {
+                    tree: self.tree,
+                    index: child_index,
+
+                    p1: PhantomData
+                }))
     }
 
     pub fn take_child(&mut self, branch: usize)
-        -> Result<Option<NodeOwnedGuard<'tree, T, C>>, InvalidChildIndex> {
+        -> Result<Option<NodeOwnedGuard<'tree, T, C>>, InvalidBranchIndex> {
 
+        self.children.as_slice().get(branch)
+            .ok_or(InvalidBranchIndex(branch))
+            .map(|child_id| child_id.index)
+            .map(|child_index| child_index
+                .map(move |child_index| {
+                    // detach the parent
+                    unsafe {
+                        if let &Node::Present {
+                            ref parent,
+                            ..
+                        } = &*self.tree.nodes[child_index].get() {
+                            parent.set(ParentId::Detached);
+                        } else {
+                            unreachable!("child index points to garbage");
+                        }
+                    }
+
+                    // detach the child
+                    self.children.as_mut_slice()[branch] = ChildId {
+                        index: None
+                    };
+
+                    // create the guard
+                    NodeOwnedGuard {
+                        tree: self.tree,
+                        index: child_index,
+                        reattached: false,
+                    }
+                })
+            )
+    }
+
+    pub fn put_child_elem(&mut self, branch: usize, elem: T) -> Result<bool, InvalidBranchIndex> {
         unimplemented!()
     }
 
-    pub fn put_child_elem(&mut self, branch: usize, elem: T) -> Result<bool, InvalidChildIndex> {
-        unimplemented!()
-    }
-
-    pub fn put_child_tree(&mut self, branch: usize, tree: NodeOwnedGuard<'tree, T, C>) -> Result<bool, InvalidChildIndex> {
+    pub fn put_child_tree(&mut self, branch: usize, tree: NodeOwnedGuard<'tree, T, C>) -> Result<bool, InvalidBranchIndex> {
         unimplemented!()
     }
 }
+
+// TODO: read-only access
 
 fn main() {
     println!("hello world");
