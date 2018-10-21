@@ -1,4 +1,5 @@
 #![feature(fixed_size_array)]
+#![feature(optin_builtin_traits)]
 
 extern crate core;
 
@@ -7,6 +8,7 @@ use std::cell::{UnsafeCell, Cell};
 use std::ops::Drop;
 use std::marker::PhantomData;
 use std::ptr;
+use std::mem;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct ChildId {
@@ -35,14 +37,14 @@ enum ParentId {
 pub struct Tree<T, C: FixedSizeArray<ChildId>> {
     nodes: UnsafeCell<Vec<UnsafeCell<Node<T, C>>>>,
     root: Option<usize>,
-    garbage: Vec<usize>,
+    garbage: UnsafeCell<Vec<usize>>,
 }
 impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
     pub fn new() -> Self {
         Tree {
             nodes: UnsafeCell::new(Vec::new()),
             root: None,
-            garbage: Vec::new()
+            garbage: UnsafeCell::new(Vec::new()),
         }
     }
 
@@ -88,6 +90,7 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
                 let children: &'child mut C = &mut*children.get();
                 let child_guard: ChildGuard<'tree, 'child, T, C> = ChildGuard {
                     tree: self.tree,
+                    index: self.index,
                     children,
 
                     p1: PhantomData,
@@ -99,6 +102,8 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
         }
     }
 }
+impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'tree, 'node, T, C> {}
 
 pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
@@ -119,6 +124,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
                 let children: &'child mut C = &mut*children.get();
                 let child_guard: ChildGuard<'tree, 'child, T, C> = ChildGuard {
                     tree: self.tree,
+                    index: self.index,
                     children,
 
                     p1: PhantomData,
@@ -138,6 +144,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> 
 
 pub struct ChildGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
+    index: usize,
     children: &'node mut C,
 
     p1: PhantomData<&'tree mut ()>,
@@ -196,14 +203,103 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node
             )
     }
 
-    pub fn put_child_elem(&mut self, branch: usize, elem: T) -> Result<bool, InvalidBranchIndex> {
-        unimplemented!()
+    unsafe fn delete_child(&mut self,
+                           nodes_vec: &mut Vec<UnsafeCell<Node<T, C>>>,
+                           branch: usize) -> bool {
+        if let ChildId {
+            index: Some(former_child_index)
+        } = self.children.as_slice()[branch] {
+            *(&mut*nodes_vec[former_child_index].get()) = Node::Garbage;
+            (&mut*self.tree.garbage.get()).push(former_child_index);
+            true
+        } else {
+            false
+        }
     }
 
-    pub fn put_child_tree(&mut self, branch: usize, tree: NodeOwnedGuard<'tree, T, C>) -> Result<bool, InvalidBranchIndex> {
-        unimplemented!()
+    pub fn put_child_elem(&mut self, branch: usize, elem: T) -> Result<bool, InvalidBranchIndex> {
+        unsafe {
+            // short-circuit if the branch is invalid
+            if branch >= self.children.as_slice().len() {
+                return Err(InvalidBranchIndex(branch));
+            }
+
+            // unsafely create the new children array
+            let child_children: C = {
+                let mut children: C = mem::uninitialized();
+                for child_ref in children.as_mut_slice() {
+                    ptr::write(child_ref, ChildId {
+                        index: None
+                    });
+                }
+                children
+            };
+
+            // create the new node
+            let child_node = Node::Present {
+                elem: UnsafeCell::new(elem),
+                parent: Cell::new(ParentId::Some(self.index)),
+                children: UnsafeCell::new(child_children)
+            };
+
+            let nodes_vec = &mut*self.tree.nodes.get();
+
+            // insert it into the nodes vector, get the index
+            nodes_vec.push(UnsafeCell::new(child_node));
+            let child_index = nodes_vec.len() - 1;
+
+            // mark any existing child as garbage
+            let deleted = self.delete_child(nodes_vec, branch);
+
+            // attach the child
+            self.children.as_mut_slice()[branch] = ChildId {
+                index: Some(child_index)
+            };
+
+            // done
+            Ok(deleted)
+        }
+    }
+
+    pub fn put_child_tree(&mut self, branch: usize, mut subtree: NodeOwnedGuard<'tree, T, C>) -> Result<bool, InvalidBranchIndex> {
+        unsafe {
+            // short-circuit if the branch is invalid
+            if branch >= self.children.as_slice().len() {
+                return Err(InvalidBranchIndex(branch));
+            }
+
+            let nodes_vec = &mut*self.tree.nodes.get();
+
+            // mark any existing child as garbage
+            let deleted = self.delete_child(nodes_vec, branch);
+
+            // attach the child
+            self.children.as_mut_slice()[branch] = ChildId {
+                index: Some(subtree.index),
+            };
+
+            // attach the parent
+            if let &Node::Present {
+                ref parent,
+                ..
+            } = &*nodes_vec[subtree.index].get() {
+                debug_assert_eq!(parent.get(), ParentId::Detached);
+                parent.set(ParentId::Some(self.index));
+            } else {
+                unreachable!("put child tree references garbage");
+            }
+
+            // drop to NodeOwnedGuard without triggering it to mark the node as garbage
+            subtree.reattached = true;
+            mem::drop(subtree);
+
+            // done
+            Ok(deleted)
+        }
     }
 }
+impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for ChildGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for ChildGuard<'tree, 'node, T, C> {}
 
 // TODO: read-only access
 
