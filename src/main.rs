@@ -1,5 +1,6 @@
 #![feature(fixed_size_array)]
 #![feature(optin_builtin_traits)]
+#![allow(mutable_transmutes)]
 
 extern crate core;
 
@@ -9,6 +10,8 @@ use std::ops::Drop;
 use std::marker::PhantomData;
 use std::ptr;
 use std::mem;
+use std::fmt::{Debug, Formatter};
+use std::fmt;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct ChildId {
@@ -178,6 +181,12 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
 }
 unsafe impl<T: Send, C: FixedSizeArray<ChildId>> Send for Tree<T, C> {}
 unsafe impl<T: Sync, C: FixedSizeArray<ChildId>> Sync for Tree<T, C> {}
+impl<T: Debug, C: FixedSizeArray<ChildId>> Debug for Tree<T, C> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        // TODO: bad and wrong
+        unsafe { mem::transmute::<&Self, &mut Self>(self).write_root().fmt(f) }
+    }
+}
 
 pub struct NodeWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
@@ -212,6 +221,21 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard<'tree, 'node, T, C> {}
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node: 'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuard<'tree, 'node, T, C> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        // TODO: don't transmute imut to mut, that's bad and wrong and illegal
+        // TODO: but in this case, it should work for now
+        let (elem, mut children) = unsafe { mem::transmute::<&Self, &mut Self>(self).split() };
+        let mut builder = f.debug_struct("Node");
+        builder.field("elem", elem);
+        let num_children = children.children.as_slice().len();
+        for b in 0..num_children {
+            let child = children.write_child(b).unwrap();
+            builder.field(&format!("child_{}", b), &child);
+        }
+        builder.finish()
+    }
+}
 
 pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
@@ -243,6 +267,8 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
             }
         }
     }
+
+    // TODO: take elem
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> {
     fn drop(&mut self) {
@@ -262,7 +288,7 @@ pub struct ChildGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
     p1: PhantomData<&'tree mut ()>,
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildGuard<'tree, 'node, T, C> {
-    pub fn write_child<'child>(&'child mut self, branch: usize)
+    pub fn write_child<'this, 'child: 'this>(&'this mut self, branch: usize)
         -> Result<Option<NodeWriteGuard<'tree, 'child, T, C>>, InvalidBranchIndex> {
 
         self.children.as_slice().get(branch)
@@ -406,7 +432,40 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for ChildGuard<'t
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for ChildGuard<'tree, 'node, T, C> {}
 
 // TODO: read-only access
+// TODO: creation of a detached node which was never attached
+// TODO: garbage collection
 
 fn main() {
-    println!("hello world");
+    let mut tree: Tree<i32, [ChildId; 2]> = Tree::new();
+    println!("{:#?}", tree);
+    println!("{:#?}", tree.write_root());
+    println!("{}", tree.put_root_elem(0));
+    println!("{:#?}", tree);
+    {
+        let mut root_guard = tree.write_root().unwrap();
+        let (mut root, mut root_children) = root_guard.split();
+        println!("{}", root);
+        *root += 1;
+        println!("{:?}", root_children.write_child(0));
+        println!("{:?}", root_children.write_child(1));
+        println!("{:?}", root_children.write_child(2));
+        println!("-a");
+        println!("{:?}", root_children.put_child_elem(0, 2));
+        println!("{:?}", root_children.put_child_elem(1, 3));
+        println!("{:?}", root_children.put_child_elem(0, 4));
+        println!("{:?}", root_children.put_child_elem(2, 7));
+    }
+    println!("{:#?}", tree);
+    {
+        let mut root_guard = tree.write_root().unwrap();
+        let (mut root, mut root_children) = root_guard.split();
+        let detached = root_children.take_child(1).unwrap().unwrap();
+        {
+            let mut node_0_guard = root_children.write_child(0).unwrap().unwrap();
+            let (mut node_0, mut node_0_children) = node_0_guard.split();
+            node_0_children.put_child_tree(1, detached);
+            *node_0 = 42;
+        }
+    }
+    println!("{:#?}", tree);
 }
