@@ -52,40 +52,75 @@ fn new_child_array<C: FixedSizeArray<ChildId>>() -> C {
 
 pub struct Tree<T, C: FixedSizeArray<ChildId>> {
     nodes: UnsafeCell<Vec<UnsafeCell<Node<T, C>>>>,
-    root: Option<usize>,
+    root: Cell<Option<usize>>,
     garbage: UnsafeCell<Vec<usize>>,
 }
 impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
     pub fn new() -> Self {
         Tree {
             nodes: UnsafeCell::new(Vec::new()),
-            root: None,
+            root: Cell::new(None),
             garbage: UnsafeCell::new(Vec::new()),
         }
     }
 
-    pub fn write_root<'tree>(&'tree mut self) -> Option<NodeWriteGuard<'tree, 'tree, T, C>> {
-        let self_immutable: &Self = self;
-
-        self_immutable.root
-            .map(|root_index| NodeWriteGuard {
-                tree: self_immutable,
-                index: root_index,
-
-                p1: PhantomData,
-                p2: PhantomData,
-            })
-    }
-
     pub fn read_root<'tree>(&'tree self) -> Option<NodeReadGuard<'tree, T, C>> {
-        self.root
+        self.root.get()
             .map(|root_index| unsafe {
                 NodeReadGuard::new(self, root_index)
             })
     }
 
-    pub fn take_root<'tree>(&'tree mut self) -> Option<NodeOwnedGuard<'tree, T, C>> {
-        self.root
+    pub fn mutate<'tree>(&'tree mut self) -> TreeMutation<'tree, T, C> {
+        TreeMutation {
+            tree: self
+        }
+    }
+
+    pub fn garbage_collect(&mut self) {
+        unimplemented!()
+    }
+}
+unsafe impl<T: Send, C: FixedSizeArray<ChildId>> Send for Tree<T, C> {}
+unsafe impl<T: Sync, C: FixedSizeArray<ChildId>> Sync for Tree<T, C> {}
+impl<T: Debug, C: FixedSizeArray<ChildId>> Debug for Tree<T, C> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        self.read_root().fmt(f)
+    }
+}
+
+pub struct TreeMutation<'tree, T, C: FixedSizeArray<ChildId>> {
+    tree: &'tree mut Tree<T, C>,
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> !Send for TreeMutation<'tree, T, C> {}
+impl<'tree, T, C: FixedSizeArray<ChildId>> !Sync for TreeMutation<'tree, T, C> {}
+impl<'tree, T, C: FixedSizeArray<ChildId>> Deref for TreeMutation<'tree, T, C> {
+    type Target = Tree<T, C>;
+
+    fn deref(&self) -> &<Self as Deref>::Target {
+        self.tree
+    }
+}
+impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for TreeMutation<'tree, T, C> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        self.tree.fmt(f)
+    }
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> TreeMutation<'tree, T, C> {
+    pub fn write_root<'this: 'tree>(&'this self) -> Option<NodeWriteGuard<'tree, 'tree, T, C>> {
+        let self_immutable: &Self = self;
+
+        self_immutable.root.get()
+            .map(|root_index| NodeWriteGuard {
+                tree: self_immutable,
+                index: root_index,
+
+                p1: PhantomData,
+            })
+    }
+
+    pub fn take_root<'this: 'tree>(&'this self) -> Option<NodeOwnedGuard<'tree, T, C>> {
+        self.root.get()
             .map(move |root_index| {
                 // detach the parent
                 unsafe {
@@ -101,21 +136,19 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                 }
 
                 // detach the root
-                self.root = None;
+                self.root.set(None);
 
                 // create the guard
                 NodeOwnedGuard {
                     tree: self,
                     index: root_index,
                     reattached: false,
-
-                    p1: PhantomData,
                 }
             })
     }
 
-    unsafe fn delete_root(&mut self, nodes_vec: &mut Vec<UnsafeCell<Node<T, C>>>) -> bool {
-        if let Some(former_root_index) = self.root {
+    unsafe fn delete_root(&self, nodes_vec: &mut Vec<UnsafeCell<Node<T, C>>>) -> bool {
+        if let Some(former_root_index) = self.root.get() {
             *(&mut*nodes_vec[former_root_index].get()) = Node::Garbage;
             (&mut*self.garbage.get()).push(former_root_index);
             true
@@ -124,7 +157,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
-    pub fn put_root_elem(&mut self, elem: T) -> bool {
+    pub fn put_root_elem(&self, elem: T) -> bool {
         unsafe {
             // unsafely create the new children array
             let child_children: C = new_child_array();
@@ -146,14 +179,14 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
             let deleted = self.delete_root(nodes_vec);
 
             // attach the root
-            self.root = Some(child_index);
+            self.root.set(Some(child_index));
 
             // done
             deleted
         }
     }
 
-    pub fn put_root_tree<'tree>(&'tree mut self, mut subtree: NodeOwnedGuard<'tree, T, C>) -> bool {
+    pub fn put_root_tree(&self, mut subtree: NodeOwnedGuard<'tree, T, C>) -> bool {
         unsafe {
             let nodes_vec = &mut*self.nodes.get();
 
@@ -161,7 +194,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
             let deleted = self.delete_root(nodes_vec);
 
             // attach the root
-            self.root = Some(subtree.index);
+            self.root.set(Some(subtree.index));
 
             // attach the parent
             if let &Node::Present {
@@ -183,7 +216,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
-    unsafe fn new_detached_unsafe<'tree>(&'tree self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
+    unsafe fn new_detached_unsafe<'this: 'tree>(&'this self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
         /*
         this is unsafe because it is not threadsafe, but does not prevent usage
         from multiple threads simultaneously
@@ -212,35 +245,21 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
             tree: self,
             index: node_index,
             reattached: false,
-
-            p1: PhantomData,
         }
     }
 
-    pub fn new_detached<'tree>(&'tree mut self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
+    pub fn new_detached<'this: 'tree>(&'this self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
         unsafe {
             self.new_detached_unsafe(elem)
         }
     }
-
-    pub fn garbage_collect(&mut self) {
-        unimplemented!()
-    }
-}
-unsafe impl<T: Send, C: FixedSizeArray<ChildId>> Send for Tree<T, C> {}
-unsafe impl<T: Sync, C: FixedSizeArray<ChildId>> Sync for Tree<T, C> {}
-impl<T: Debug, C: FixedSizeArray<ChildId>> Debug for Tree<T, C> {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        self.read_root().fmt(f)
-    }
 }
 
 pub struct NodeWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
-    tree: &'tree Tree<T, C>,
+    tree: &'tree TreeMutation<'tree, T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
-    p2: PhantomData<&'tree mut ()>,
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T, C> {
     pub fn read(&self) -> NodeReadGuard<'tree, T, C> {
@@ -262,8 +281,6 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
                     tree: self.tree,
                     index: self.index,
                     children,
-
-                    p1: PhantomData,
                 };
                 (elem, child_guard)
             } else {
@@ -287,11 +304,9 @@ impl<'tree, 'node: 'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWr
 }
 
 pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
-    tree: &'tree Tree<T, C>,
+    tree: &'tree TreeMutation<'tree, T, C>,
     index: usize,
     reattached: bool,
-
-    p1: PhantomData<&'tree mut ()>,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
     pub fn read(&self) -> NodeReadGuard<'tree, T, C> {
@@ -313,8 +328,6 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
                     tree: self.tree,
                     index: self.index,
                     children,
-
-                    p1: PhantomData,
                 };
                 (elem, child_guard)
             } else {
@@ -373,11 +386,9 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeOwnedGuard<'tree
 }
 
 pub struct ChildWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
-    tree: &'tree Tree<T, C>,
+    tree: &'tree TreeMutation<'tree, T, C>,
     index: usize,
     children: &'node mut C,
-
-    p1: PhantomData<&'tree mut ()>,
 }
 impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, T, C> {
     pub fn write_child<'this, 'child: 'this>(&'this mut self, branch: usize)
@@ -392,7 +403,6 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 
                     index: child_index,
 
                     p1: PhantomData,
-                    p2: PhantomData,
                 }))
     }
 
@@ -426,8 +436,6 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 
                         tree: self.tree,
                         index: child_index,
                         reattached: false,
-
-                        p1: PhantomData
                     }
                 })
             )
@@ -595,12 +603,13 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
 
 fn main() {
     let mut tree: Tree<i32, [ChildId; 2]> = Tree::new();
-    println!("{:#?}", tree);
-    println!("{:#?}", tree.write_root());
-    println!("{}", tree.put_root_elem(0));
-    println!("{:#?}", tree);
+    let op = tree.mutate();
+    println!("{:#?}", op);
+    println!("{:#?}", op.write_root());
+    println!("{}", op.put_root_elem(0));
+    println!("{:#?}", op);
     {
-        let mut root_guard = tree.write_root().unwrap();
+        let mut root_guard = op.write_root().unwrap();
         let (root, mut root_children) = root_guard.split();
         println!("{}", root);
         *root += 1;
@@ -613,9 +622,9 @@ fn main() {
         println!("{:?}", root_children.put_child_elem(0, 4));
         println!("{:?}", root_children.put_child_elem(2, 7));
     }
-    println!("{:#?}", tree);
+    println!("{:#?}", op);
     {
-        let mut root_guard = tree.write_root().unwrap();
+        let mut root_guard = op.write_root().unwrap();
         let (_, mut root_children) = root_guard.split();
         let detached = root_children.take_child(1).unwrap().unwrap();
         {
@@ -625,29 +634,29 @@ fn main() {
             *node_0 = 42;
         }
     }
-    println!("{:#?}", tree);
-    println!("{}", tree
+    println!("{:#?}", op);
+    println!("{}", op
         .read_root().unwrap()
         .child(0).unwrap().unwrap()
         .child(1).unwrap().unwrap()
         .elem);
-    println!("{}", tree
+    println!("{}", op
         .write_root().unwrap()
         .split().1.write_child(0).unwrap().unwrap()
         .split().1.take_child(1).unwrap().unwrap()
         .into_elem());
-    println!("a {:#?}", tree);
+    println!("a {:#?}", op);
     {
-        let mut detached_guard = tree.new_detached(10);
+        let mut detached_guard = op.new_detached(10);
         {
             let (_, mut detached_children) = detached_guard.split();
             detached_children.put_child_elem(0, 20).unwrap();
             detached_children.put_child_elem(1, 30).unwrap();
         }
         println!("b {:#?}", detached_guard);
-        tree
+        op
             .write_root().unwrap()
             .split().1.put_child_tree(1, detached_guard).unwrap();
     }
-    println!("c {:#?}", tree);
+    println!("c {:#?}", op);
 }
