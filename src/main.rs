@@ -183,6 +183,46 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
+    unsafe fn new_detached_unsafe<'tree>(&'tree self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
+        /*
+        this is unsafe because it is not threadsafe, but does not prevent usage
+        from multiple threads simultaneously
+
+        this can either be called safely within the context of a mutable reference to the tree
+        which guarentees exclusive access
+        or within the context of some sort of write guard to the tree
+        which also guarentees exclusive access
+        */
+
+        // create the new node
+        let node = Node::Present {
+            elem: UnsafeCell::new(elem),
+            parent: Cell::new(ParentId::Detached),
+            children: UnsafeCell::new(new_child_array()),
+        };
+
+        let node_vec = &mut*self.nodes.get();
+
+        // add it to the vec
+        node_vec.push(UnsafeCell::new(node));
+        let node_index = node_vec.len() - 1;
+
+        // create the guard
+        NodeOwnedGuard {
+            tree: self,
+            index: node_index,
+            reattached: false,
+
+            p1: PhantomData,
+        }
+    }
+
+    pub fn new_detached<'tree>(&'tree mut self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
+        unsafe {
+            self.new_detached_unsafe(elem)
+        }
+    }
+
     pub fn garbage_collect(&mut self) {
         unimplemented!()
     }
@@ -229,6 +269,12 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
             } else {
                 unreachable!("guarding garbage")
             }
+        }
+    }
+
+    pub fn new_detached(&self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
+        unsafe {
+            self.tree.new_detached_unsafe(elem)
         }
     }
 }
@@ -305,7 +351,11 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
         }
     }
 
-    // TODO: take elem
+    pub fn new_detached(&self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
+        unsafe {
+            self.tree.new_detached_unsafe(elem)
+        }
+    }
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> {
     fn drop(&mut self) {
@@ -540,6 +590,9 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
 // TODO: garbage collection
 // TODO: docs and example
 
+// TODO: we need a treemutation datum which mutably references the tree, is not send or sync,
+// TODO: and all other ndoes immutably reference
+
 fn main() {
     let mut tree: Tree<i32, [ChildId; 2]> = Tree::new();
     println!("{:#?}", tree);
@@ -583,4 +636,18 @@ fn main() {
         .split().1.write_child(0).unwrap().unwrap()
         .split().1.take_child(1).unwrap().unwrap()
         .into_elem());
+    println!("a {:#?}", tree);
+    {
+        let mut detached_guard = tree.new_detached(10);
+        {
+            let (_, mut detached_children) = detached_guard.split();
+            detached_children.put_child_elem(0, 20).unwrap();
+            detached_children.put_child_elem(1, 30).unwrap();
+        }
+        println!("b {:#?}", detached_guard);
+        tree
+            .write_root().unwrap()
+            .split().1.put_child_tree(1, detached_guard).unwrap();
+    }
+    println!("c {:#?}", tree);
 }
