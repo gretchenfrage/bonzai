@@ -1,6 +1,7 @@
 #![feature(fixed_size_array)]
 #![feature(optin_builtin_traits)]
 #![allow(mutable_transmutes)]
+#![feature(nll)]
 
 extern crate core;
 
@@ -276,6 +277,34 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
         }
     }
 
+    pub fn into_elem(mut self) -> T {
+        unsafe {
+            // acquire a mutable reference to the node
+            let node: &mut Node<T, C> = &mut*((&*(&(&*self.tree.nodes.get())[self.index])).get());
+
+            // swap it with a garbage node
+            let node = mem::replace(node, Node::Garbage);
+
+            // extract the element
+            let elem = if let Node::Present {
+                elem,
+                ..
+            } = node {
+                elem.into_inner()
+            } else {
+                panic!("node owned guard references garbage")
+            };
+
+            // we've already marked self as garbage, so we can mark ourself as reattached
+            // and drop
+            self.reattached = true;
+            mem::drop(self);
+
+            // done
+            elem
+        }
+    }
+
     // TODO: take elem
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> {
@@ -446,7 +475,6 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGua
 
 pub struct NodeReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
-    index: usize,
     node: &'tree Node<T, C>,
     pub elem: &'tree T,
 }
@@ -469,7 +497,6 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeReadGuard<'tree, T, C> {
         };
         NodeReadGuard {
             tree,
-            index,
             node,
             elem
         }
@@ -503,15 +530,15 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
             &Node::Garbage => unreachable!("node read guard on garbage"),
         };
         for branch in 0..num_children {
-            builder.field(&format!("child_{}", branch), &self.child(branch));
+            builder.field(&format!("child_{}", branch), &self.child(branch).unwrap());
         }
         builder.finish()
     }
 }
 
-// TODO: read-only access
 // TODO: creation of a detached node which was never attached
 // TODO: garbage collection
+// TODO: docs and example
 
 fn main() {
     let mut tree: Tree<i32, [ChildId; 2]> = Tree::new();
@@ -521,7 +548,7 @@ fn main() {
     println!("{:#?}", tree);
     {
         let mut root_guard = tree.write_root().unwrap();
-        let (mut root, mut root_children) = root_guard.split();
+        let (root, mut root_children) = root_guard.split();
         println!("{}", root);
         *root += 1;
         println!("{:?}", root_children.write_child(0));
@@ -536,14 +563,24 @@ fn main() {
     println!("{:#?}", tree);
     {
         let mut root_guard = tree.write_root().unwrap();
-        let (mut root, mut root_children) = root_guard.split();
+        let (_, mut root_children) = root_guard.split();
         let detached = root_children.take_child(1).unwrap().unwrap();
         {
             let mut node_0_guard = root_children.write_child(0).unwrap().unwrap();
-            let (mut node_0, mut node_0_children) = node_0_guard.split();
-            node_0_children.put_child_tree(1, detached);
+            let (node_0, mut node_0_children) = node_0_guard.split();
+            node_0_children.put_child_tree(1, detached).unwrap();
             *node_0 = 42;
         }
     }
     println!("{:#?}", tree);
+    println!("{}", tree
+        .read_root().unwrap()
+        .child(0).unwrap().unwrap()
+        .child(1).unwrap().unwrap()
+        .elem);
+    println!("{}", tree
+        .write_root().unwrap()
+        .split().1.write_child(0).unwrap().unwrap()
+        .split().1.take_child(1).unwrap().unwrap()
+        .into_elem());
 }
