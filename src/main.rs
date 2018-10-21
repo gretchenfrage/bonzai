@@ -14,9 +14,14 @@ use std::mem;
 use std::fmt::{Debug, Formatter};
 use std::fmt;
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct ChildId {
     index: Option<usize>
+}
+impl Debug for ChildId {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        f.write_str(&format!("{:?}", self.index))
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -79,10 +84,10 @@ pub struct DebugNodes<'a, T, C: FixedSizeArray<ChildId>> {
 }
 impl<'a, T: Debug, C: FixedSizeArray<ChildId> + Debug> Debug for DebugNodes<'a, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        let mut builder = f.debug_list();
+        let mut builder = f.debug_struct("");
         unsafe {
-            for node in &*self.nodes.get() {
-                builder.entry(&*node.get());
+            for (i, node) in (&*self.nodes.get()).iter().enumerate() {
+                builder.field(&format!("{}", i), &*node.get());
             }
         }
         builder.finish()
@@ -780,11 +785,11 @@ fn main() {
     }
 
     println!("------------------------");
-    //println!("{:#?}", tree.debug_nodes());
-    println!("{:?}", tree);
+    println!("{:#?}", tree.debug_nodes());
+    //println!("{:?}", tree);
     //println!("gggggggggggggggggggggggg");
     tree.garbage_collect();
     //println!("{:#?}", tree.debug_nodes());
-    println!("{:?}", tree);
+    //println!("{:?}", tree);
 
 }
