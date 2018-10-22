@@ -347,23 +347,21 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeMutation<'tree, T, C> {
     }
 }
 
-pub struct NodeWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
+pub struct NodeWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
     pub op: &'tree TreeMutation<'tree, T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
 }
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T, C> {
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T, C> {
+    // TODO: unnecessarily complex lifetimes
     pub fn read<'this, 'read: 'this>(&'this self) -> NodeReadGuard<'read, T, C> where 'tree: 'read {
         unsafe {
             NodeReadGuard::new(self.op, self.index)
         }
     }
 
-    //pub fn split<'child>(&'child mut self) -> (&'child mut T, ChildWriteGuard<'tree, 'child, T, C>) {
-    pub fn split<'a, 'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'a, 'b, T, C>)
-        where 'tree: 'b, 'tree: 'a {
-    //pub fn split<'a: 'tree, 'b: 'tree, 't: 'a + 'b>(&'t mut self) -> (&'a mut T, ChildWriteGuard<'b, 'a, T, C>) {
+    pub fn split<'a>(&'a mut self) -> (&'a mut T, ChildWriteGuard<'tree, 'a, T, C>) {
         unsafe {
             if let &Node::Present {
                 ref elem,
@@ -385,17 +383,17 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, '
         }
     }
 
-    pub fn elem<'child: 'tree>(&'child mut self) -> &'child mut T {
-        self.split().0
-    }
-
-    pub fn children<'child: 'tree>(&'child mut self) -> ChildWriteGuard<'tree, 'child, T, C> {
-        self.split().1
-    }
+    //pub fn elem<'child: 'tree>(&'child mut self) -> &'child mut T {
+    //    self.split().0
+    //}
+//
+    //pub fn children<'child: 'tree>(&'child mut self) -> ChildWriteGuard<'tree, 'child, T, C> {
+    //    self.split().1
+    //}
 }
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard<'tree, 'node, T, C> {}
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'tree, 'node, T, C> {}
-impl<'tree, 'node: 'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuard<'tree, 'node, T, C> {
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuard<'tree, 'node, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         self.read().fmt(f)
     }
@@ -422,9 +420,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
         }
     }
 
-    //pub fn split<'borrow>(&'borrow mut self) -> (&'borrow mut T, ChildWriteGuard<'tree, 'borrow, T, C>) where 'borrow: 'tree {
-    pub fn split<'a, 'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'a, 'b, T, C>)
-        where 'tree: 'a, 'tree: 'b {
+    pub fn split<'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'tree, 'b, T, C>) {
         unsafe {
             if let &Node::Present {
                 ref elem,
@@ -511,14 +507,14 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeOwnedGuard<'tree
     }
 }
 
-pub struct ChildWriteGuard<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> {
+pub struct ChildWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
     pub op: &'tree TreeMutation<'tree, T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
     //children: &'node mut C,
 }
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, T, C> {
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, T, C> {
     fn children(&mut self) -> &mut C {
         unsafe {
             if let &Node::Present {
@@ -547,9 +543,10 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 
                 }))
     }
 
-    pub fn take_child<'child>(&mut self, branch: usize)
-        -> Result<Option<NodeOwnedGuard<'child, T, C>>, InvalidBranchIndex>
-        where 'tree: 'child {
+    //pub fn take_child<'child>(&mut self, branch: usize)
+    //    -> Result<Option<NodeOwnedGuard<'child, T, C>>, InvalidBranchIndex>
+    //    where 'tree: 'child {
+    pub fn take_child(&mut self, branch: usize) -> Result<Option<NodeOwnedGuard<'tree, T, C>>, InvalidBranchIndex> {
 
         self.children().as_slice().get(branch)
             .ok_or(InvalidBranchIndex(branch))
@@ -676,8 +673,8 @@ impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 
         }
     }
 }
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Send for ChildWriteGuard<'tree, 'node, T, C> {}
-impl<'tree, 'node: 'tree, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Send for ChildWriteGuard<'tree, 'node, T, C> {}
+impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuard<'tree, 'node, T, C> {}
 
 pub struct NodeReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,

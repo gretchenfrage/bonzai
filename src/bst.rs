@@ -31,7 +31,7 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
         */
     }
 
-    fn insert_to_node<'tree: 'node, 'node>(mut guard: NodeWriteGuard<'tree, 'node, T, [ChildId; 2]>, elem: T) {
+    fn insert_to_node(mut guard: NodeWriteGuard<T, [ChildId; 2]>, elem: T) {
         let (node_elem, mut children) = guard.split();
         let child_branch =
             if elem > *node_elem {
@@ -82,17 +82,6 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
     fn remove_from_node<'tree>(mut guard: NodeOwnedGuard<'tree, T, [ChildId; 2]>, elem: T)
         -> Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> {
 
-        /*
-        let (node_elem, mut children) = guard.split();
-        let recurse_to =
-            if elem > *node_elem {
-                Some(1)
-            } else if elem < *node_elem {
-                Some(0)
-            } else {
-                None
-            };
-            */
         let recurse_to = {
             let node_elem = guard.split().0;
             if elem > *node_elem {
@@ -115,14 +104,10 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
             }
             Some(guard)
         } else {
+
             // case: removal
-            //let mut children = guard.children();
-            //match (children.take_child(0).unwrap(), children.take_child(1).unwrap()) {
             match {
-                let mut children = guard.split().1;
-                //let tuple: (&mut T, ChildWriteGuard<'tree, _, T, [ChildId; 2]>) = guard.split();
-                //let (elem, mut children) = tuple;
-                //(children.take_child(0).unwrap(), children.take_child(1).unwrap())
+                let (_, mut children) = guard.split();
                 let left: Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> = children.take_child(0).unwrap();
                 let right: Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> = children.take_child(1).unwrap();
                 (left, right)
