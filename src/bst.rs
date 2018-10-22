@@ -14,11 +14,14 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
 
     pub fn insert(&mut self, elem: T) {
         let op = self.tree.mutate();
-        if let Some(guard) = op.write_root() {
-            Self::insert_to_node(guard, elem);
-        } else {
-            op.put_root_elem(elem);
+        {
+            if let Some(guard) = op.write_root() {
+                Self::insert_to_node(guard, elem);
+            } else {
+                op.put_root_elem(elem);
+            }
         }
+        op.finish_and_gc();
     }
 
     fn insert_to_node(mut guard: NodeWriteGuard<T, [ChildId; 2]>, elem: T) {
@@ -45,19 +48,22 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
 
     pub fn remove(&mut self, elem: T) {
         let op = self.tree.mutate();
-        let replacement =
-            if let Some(mut guard) = op.take_root() {
-                if *guard.split().0 != elem {
-                    Self::remove_from_node(guard, elem)
+        {
+            let replacement =
+                if let Some(mut guard) = op.take_root() {
+                    if *guard.split().0 != elem {
+                        Self::remove_from_node(guard, elem)
+                    } else {
+                        None
+                    }
                 } else {
                     None
-                }
-            } else {
-                None
-            };
-        if let Some(replacement) = replacement {
-            op.put_root_tree(replacement);
+                };
+            if let Some(replacement) = replacement {
+                op.put_root_tree(replacement);
+            }
         }
+        op.finish_and_gc();
     }
 
     fn remove_from_node<'tree>(mut guard: NodeOwnedGuard<'tree, T, [ChildId; 2]>, elem: T)
@@ -157,10 +163,15 @@ pub fn bst_test() {
     tree.insert(0);
     tree.insert(2);
     tree.insert(-1);
+
     tree.remove(-1);
+
     tree.insert(-2);
     tree.insert(1);
+
     tree.remove(1);
 
     println!("{:#?}", tree);
+    println!();
+    println!("{:#?}", tree.tree.debug_nodes());
 }

@@ -1,7 +1,6 @@
 #![feature(fixed_size_array)]
 #![feature(optin_builtin_traits)]
 #![allow(mutable_transmutes)]
-//#![feature(nll)]
 
 extern crate core;
 
@@ -87,7 +86,7 @@ pub struct DebugNodes<'a, T, C: FixedSizeArray<ChildId>> {
 }
 impl<'a, T: Debug, C: FixedSizeArray<ChildId> + Debug> Debug for DebugNodes<'a, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        let mut builder = f.debug_struct("");
+        let mut builder = f.debug_struct("Nodes");
         unsafe {
             for (i, node) in (&*self.nodes.get()).iter().enumerate() {
                 builder.field(&format!("{}", i), &*node.get());
@@ -146,6 +145,13 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
 
                 nodes.swap_remove(garbage_index);
                 let relocated_new_index = garbage_index;
+
+                if garbage_index == relocated_new_index {
+                    // we don't need to perform reattachment if we removed the last node in the vec
+                    // that would actually cause a panic
+                    continue;
+                }
+
                 let relocated_node = &mut*(&nodes[relocated_new_index]).get();
 
                 match relocated_node {
@@ -345,6 +351,10 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeMutation<'tree, T, C> {
             }
         }
     }
+
+    pub fn finish_and_gc(self) {
+        self.tree.garbage_collect();
+    }
 }
 
 pub struct NodeWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
@@ -509,10 +519,16 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
                 unreachable!("node owned guard references garbage")
             };
 
-            // we've already marked self as garbage, so we can mark ourself as reattached
-            // and drop
+
+            // we've marked self as garbage, so we must add self to the garbage vec
+            let garbage_vec = &mut*self.op.garbage.get();
+            garbage_vec.push(self.index);
+
+            // now we can mark ourself as reattached and drop
             self.reattached = true;
             mem::drop(self);
+
+
 
             // done
             elem
@@ -524,6 +540,8 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> 
         if !self.reattached {
             unsafe {
                 *(&mut*((&(&*(self.op.nodes.get()))[self.index]).get())) = Node::Garbage;
+                let garbage_vec = &mut*self.op.garbage.get();
+                garbage_vec.push(self.index);
             }
         }
     }
