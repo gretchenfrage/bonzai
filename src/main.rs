@@ -383,6 +383,14 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T
         }
     }
 
+    pub fn elem<'a>(&'a mut self) -> &'a mut T {
+        self.split().0
+    }
+
+    pub fn children<'a>(&'a mut self) -> ChildWriteGuard<'tree, 'a, T, C> {
+        self.split().1
+    }
+
     //pub fn elem<'child: 'tree>(&'child mut self) -> &'child mut T {
     //    self.split().0
     //}
@@ -411,6 +419,16 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
         }
     }
 
+    pub fn borrow<'s>(&'s mut self) -> NodeWriteGuard<'tree, 's, T, C> {
+        NodeWriteGuard {
+            op: self.op,
+            index: self.index,
+
+            p1: PhantomData,
+        }
+    }
+
+    /*
     pub fn borrow<'this, 'borrow: 'this>(&'borrow mut self) -> NodeWriteGuard<'tree, 'borrow, T, C> {
         NodeWriteGuard {
             op: self.op,
@@ -419,6 +437,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
             p1: PhantomData,
         }
     }
+    */
 
     pub fn split<'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'tree, 'b, T, C>) {
         unsafe {
@@ -441,6 +460,14 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
                 unreachable!("write-guarding garbage")
             }
         }
+    }
+
+    pub fn elem<'a>(&'a mut self) -> &'a mut T {
+        self.split().0
+    }
+
+    pub fn children<'a>(&'a mut self) -> ChildWriteGuard<'tree, 'a, T, C> {
+        self.split().1
     }
 
     /*

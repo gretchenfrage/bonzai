@@ -19,16 +19,6 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
         } else {
             op.put_root_elem(elem);
         }
-        /*
-        match op.write_root() {
-            Some(root_guard) => {
-                Self::insert_to_node(root_guard, elem);
-            },
-            None => {
-                op.put_root_elem(elem);
-            },
-        };
-        */
     }
 
     fn insert_to_node(mut guard: NodeWriteGuard<T, [ChildId; 2]>, elem: T) {
@@ -55,15 +45,6 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
 
     pub fn remove(&mut self, elem: T) {
         let op = self.tree.mutate();
-        /*
-        if let Some(mut guard) = op.take_root() {
-            if *guard.elem() != elem {
-                if let Some(replacement) = Self::remove_from_node(guard, elem) {
-                    op.put_root_tree(replacement);
-                }
-            }
-        }
-        */
         let replacement =
             if let Some(mut guard) = op.take_root() {
                 if *guard.split().0 != elem {
@@ -129,28 +110,43 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
                 },
                 (Some(mut left_child), Some(mut right_child)) => {
                     // case: removal of branch with two children
-                    if right_child.read().child(0).unwrap().is_none() &&
-                        right_child.read().child(1).unwrap().is_none() {
-                        // case: the right child is a leaf
-                        // become the right child, and reattach the left child
-                        right_child.split().1.put_child_tree(0, left_child).unwrap();
-                        Some(right_child)
+                    if let Some(mut detached_smallest) = Self::detach_smallest(right_child.borrow()) {
+                        // case: the right branch has some children, and we detached the
+                        // leftmost child of the right branch
+                        // become that child, and reattach the left and right branches
+                        detached_smallest.children().put_child_tree(0, left_child).unwrap();
+                        detached_smallest.children().put_child_tree(1, right_child).unwrap();
+                        Some(detached_smallest)
                     } else {
-                        // case: the right child is a branch
-                        // detach the smallest element in the right child
-                        // become that element, and reattach both children
-                        unimplemented!()
+                        // case: the right branch has no children
+                        // become the right branch, and reattach the left branch
+                        right_child.children().put_child_tree(0, left_child).unwrap();
+                        Some(right_child)
                     }
                 }
             }
         }
     }
 
-    fn detach_smallest<'tree, 'node: 'tree>(_guard: NodeWriteGuard<'tree, 'node, T, [ChildId; 2]>)
+    fn detach_smallest<'tree, 'node>(mut guard: NodeWriteGuard<'tree, 'node, T, [ChildId; 2]>)
         -> Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> {
-
-        unimplemented!()
-
+        // if there is a leftmost branch, we can successfully detach smallest
+        // otherwise, there are no children, so we fail
+        guard.read()
+            .child(0).unwrap()
+            .map(|_| 0)
+            .or_else(|| guard.read()
+                .child(1).unwrap()
+                .map(|_| 1))
+            .map(|leftmost_branch| {
+                // attempt to recurse on that branch
+                Self::detach_smallest(guard.children().write_child(leftmost_branch).unwrap().unwrap())
+                    .unwrap_or_else(|| {
+                        // if this fails, then that branch is empty, so that's our base case
+                        // we detach it
+                        guard.children().take_child(leftmost_branch).unwrap().unwrap()
+                    })
+            })
     }
 }
 
@@ -161,7 +157,10 @@ pub fn bst_test() {
     tree.insert(0);
     tree.insert(2);
     tree.insert(-1);
+    tree.remove(-1);
     tree.insert(-2);
     tree.insert(1);
+    tree.remove(1);
+
     println!("{:#?}", tree);
 }
