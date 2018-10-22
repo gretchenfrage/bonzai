@@ -13,7 +13,7 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
     }
 
     pub fn insert(&mut self, elem: T) {
-        let op = self.tree.mutate();
+        let op = self.tree.operation();
         {
             if let Some(guard) = op.write_root() {
                 Self::insert_to_node(guard, elem);
@@ -47,7 +47,7 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
     }
 
     pub fn remove(&mut self, elem: T) {
-        let op = self.tree.mutate();
+        let op = self.tree.operation();
         {
             let replacement =
                 if let Some(mut guard) = op.take_root() {
@@ -156,7 +156,6 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
     }
 }
 
-
 //#[test]
 pub fn bst_test() {
     let mut tree: BinarySearchTree<i32> = BinarySearchTree::new();
@@ -164,12 +163,12 @@ pub fn bst_test() {
     tree.insert(2);
     tree.insert(-1);
 
-    tree.remove(-1);
+    //tree.remove(-1);
 
     tree.insert(-2);
     tree.insert(1);
 
-    tree.remove(1);
+    //tree.remove(1);
 
     println!("{:#?}", tree);
     println!();

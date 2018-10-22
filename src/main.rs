@@ -1,6 +1,5 @@
 #![feature(fixed_size_array)]
 #![feature(optin_builtin_traits)]
-#![allow(mutable_transmutes)]
 
 extern crate core;
 
@@ -123,8 +122,8 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
             })
     }
 
-    pub fn mutate<'tree>(&'tree mut self) -> TreeMutation<'tree, T, C> {
-        TreeMutation {
+    pub fn operation<'tree>(&'tree mut self) -> TreeOperation<'tree, T, C> {
+        TreeOperation {
             tree: self
         }
     }
@@ -142,6 +141,8 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                     &Node::Garbage => true,
                     &Node::Present { .. } => false
                 });
+
+                // TODO: the children are also garbage
 
                 nodes.swap_remove(garbage_index);
                 let relocated_new_index = garbage_index;
@@ -201,24 +202,24 @@ impl<T: Debug, C: FixedSizeArray<ChildId>> Debug for Tree<T, C> {
     }
 }
 
-pub struct TreeMutation<'tree, T, C: FixedSizeArray<ChildId>> {
+pub struct TreeOperation<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree mut Tree<T, C>,
 }
-impl<'tree, T, C: FixedSizeArray<ChildId>> !Send for TreeMutation<'tree, T, C> {}
-impl<'tree, T, C: FixedSizeArray<ChildId>> !Sync for TreeMutation<'tree, T, C> {}
-impl<'tree, T, C: FixedSizeArray<ChildId>> Deref for TreeMutation<'tree, T, C> {
+impl<'tree, T, C: FixedSizeArray<ChildId>> !Send for TreeOperation<'tree, T, C> {}
+impl<'tree, T, C: FixedSizeArray<ChildId>> !Sync for TreeOperation<'tree, T, C> {}
+impl<'tree, T, C: FixedSizeArray<ChildId>> Deref for TreeOperation<'tree, T, C> {
     type Target = Tree<T, C>;
 
     fn deref(&self) -> &<Self as Deref>::Target {
         self.tree
     }
 }
-impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for TreeMutation<'tree, T, C> {
+impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for TreeOperation<'tree, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         self.tree.fmt(f)
     }
 }
-impl<'tree, T, C: FixedSizeArray<ChildId>> TreeMutation<'tree, T, C> {
+impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
     pub fn write_root<'this: 'tree>(&'this self) -> Option<NodeWriteGuard<'tree, 'this, T, C>> {
         let self_immutable: &Self = self;
 
@@ -358,7 +359,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeMutation<'tree, T, C> {
 }
 
 pub struct NodeWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
-    pub op: &'tree TreeMutation<'tree, T, C>,
+    pub op: &'tree TreeOperation<'tree, T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
@@ -418,7 +419,7 @@ impl<'tree, 'node, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuar
 }
 
 pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
-    pub op: &'tree TreeMutation<'tree, T, C>,
+    pub op: &'tree TreeOperation<'tree, T, C>,
     index: usize,
     reattached: bool,
 }
@@ -553,7 +554,7 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeOwnedGuard<'tree
 }
 
 pub struct ChildWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
-    pub op: &'tree TreeMutation<'tree, T, C>,
+    pub op: &'tree TreeOperation<'tree, T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
@@ -784,6 +785,7 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
     }
 }
 
+// TODO: iteration
 // TODO: docs and example
 // TODO: automated test
 
