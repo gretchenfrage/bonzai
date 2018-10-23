@@ -3,6 +3,12 @@
 
 extern crate core;
 
+//#[feature(test)]
+pub mod bst;
+mod pinned_vec;
+
+use pinned_vec::PinnedVec;
+
 use core::array::FixedSizeArray;
 use std::cell::{UnsafeCell, Cell};
 use std::ops::{Deref, Drop};
@@ -12,8 +18,7 @@ use std::mem;
 use std::fmt::{Debug, Formatter};
 use std::fmt;
 
-//#[feature(test)]
-pub mod bst;
+const EXTENSION_SIZE: usize = 6;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct ChildId {
@@ -81,7 +86,7 @@ fn new_child_array<C: FixedSizeArray<ChildId>>() -> C {
 }
 
 pub struct DebugNodes<'a, T, C: FixedSizeArray<ChildId>> {
-    nodes: &'a UnsafeCell<Vec<UnsafeCell<Node<T, C>>>>,
+    nodes: &'a UnsafeCell<PinnedVec<UnsafeCell<Node<T, C>>>>,
 }
 impl<'a, T: Debug, C: FixedSizeArray<ChildId> + Debug> Debug for DebugNodes<'a, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
@@ -96,14 +101,14 @@ impl<'a, T: Debug, C: FixedSizeArray<ChildId> + Debug> Debug for DebugNodes<'a, 
 }
 
 pub struct Tree<T, C: FixedSizeArray<ChildId>> {
-    nodes: UnsafeCell<Vec<UnsafeCell<Node<T, C>>>>,
+    nodes: UnsafeCell<PinnedVec<UnsafeCell<Node<T, C>>>>,
     root: Cell<Option<usize>>,
     garbage: UnsafeCell<Vec<usize>>,
 }
 impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
     pub fn new() -> Self {
         Tree {
-            nodes: UnsafeCell::new(Vec::new()),
+            nodes: UnsafeCell::new(PinnedVec::new(EXTENSION_SIZE)),
             root: Cell::new(None),
             garbage: UnsafeCell::new(Vec::new()),
         }
@@ -132,6 +137,9 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         unsafe {
             let garbage_vec = &mut*self.garbage.get();
             let nodes = &mut*self.nodes.get();
+
+            nodes.compress();
+
             while let Some(garbage_index) = garbage_vec.pop() {
                 if garbage_index >= nodes.len() {
                     continue;
@@ -260,7 +268,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
             })
     }
 
-    unsafe fn delete_root(&self, nodes_vec: &mut Vec<UnsafeCell<Node<T, C>>>) -> bool {
+    unsafe fn delete_root(&self, nodes_vec: &mut PinnedVec<UnsafeCell<Node<T, C>>>) -> bool {
         if let Some(former_root_index) = self.root.get() {
             *(&mut*nodes_vec[former_root_index].get()) = Node::Garbage;
             (&mut*self.garbage.get()).push(former_root_index);
@@ -627,7 +635,7 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
     }
 
     unsafe fn delete_child(&mut self,
-                           nodes_vec: &mut Vec<UnsafeCell<Node<T, C>>>,
+                           nodes_vec: &mut PinnedVec<UnsafeCell<Node<T, C>>>,
                            branch: usize) -> bool {
         if let ChildId {
             index: Some(former_child_index)
