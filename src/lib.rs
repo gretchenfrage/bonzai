@@ -380,34 +380,94 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T
         }
     }
 
-    pub fn split<'a>(&'a mut self) -> (&'a mut T, ChildWriteGuard<'tree, 'a, T, C>) {
-        unsafe {
-            if let &Node::Present {
-                ref elem,
-                ..
-            } = &*(&*self.op.nodes.get())[self.index].get() {
-                //let elem: &'this mut T = &mut*elem.get();
-                let elem = &mut*elem.get();
-                //let child_guard: ChildWriteGuard<'tree, 'this, T, C> = ChildWriteGuard {
-                let child_guard = ChildWriteGuard {
-                    op: self.op,
-                    index: self.index,
+    unsafe fn unsafe_split<'a>(&mut self) -> (&'a mut T, ChildWriteGuard<'tree, 'a, T, C>) {
+        if let &Node::Present {
+            ref elem,
+            ..
+        } = &*(&*self.op.nodes.get())[self.index].get() {
+            //let elem: &'this mut T = &mut*elem.get();
+            let elem = &mut*elem.get();
+            //let child_guard: ChildWriteGuard<'tree, 'this, T, C> = ChildWriteGuard {
+            let child_guard = ChildWriteGuard {
+                op: self.op,
+                index: self.index,
 
-                    p1: PhantomData,
-                };
-                (elem, child_guard)
-            } else {
-                unreachable!("guarding garbage")
-            }
+                p1: PhantomData,
+            };
+            (elem, child_guard)
+        } else {
+            unreachable!("guarding garbage")
+        }
+    }
+
+    pub fn borrow_split<'a>(&'a mut self) -> (&'a mut T, ChildWriteGuard<'tree, 'a, T, C>) {
+        unsafe {
+            self.unsafe_split()
+        }
+    }
+
+    pub fn into_split(mut self) -> (&'node mut T, ChildWriteGuard<'tree, 'node, T, C>) {
+        unsafe {
+            self.unsafe_split()
         }
     }
 
     pub fn elem<'a>(&'a mut self) -> &'a mut T {
-        self.split().0
+        self.borrow_split().0
     }
 
     pub fn children<'a>(&'a mut self) -> ChildWriteGuard<'tree, 'a, T, C> {
-        self.split().1
+        self.borrow_split().1
+    }
+
+    pub fn detach(self) -> NodeOwnedGuard<'tree, T, C> {
+        unsafe {
+            // find and detach the parent
+            let parent: ParentId = if let &Node::Present {
+                parent: ref parent_cell,
+                ..
+            } = &*(&*self.op.nodes.get())[self.index].get() {
+                let parent = parent_cell.get();
+                parent_cell.set(ParentId::Detached);
+                parent
+            } else {
+                unreachable!("write guard index points to garbage")
+            };
+
+            // detach the child
+            match parent {
+                ParentId::Some {
+                    parent_index,
+                    this_branch
+                } => {
+                    // detach from a parent node
+                    if let &Node::Present {
+                        ref children,
+                        ..
+                    } = &*(&*self.op.nodes.get())[parent_index].get() {
+                        (&mut*children.get()).as_mut_slice()[this_branch] = ChildId {
+                            index: None
+                        };
+                    } else {
+                        unreachable!("write guard parent index points to garbage");
+                    }
+                },
+                ParentId::Root => {
+                    // detach from the root
+                    self.op.root.set(None);
+                },
+                ParentId::Detached => {
+                    unreachable!("node owned guard trying to detach node which is already detached");
+                }
+            };
+
+            // create the guard
+            NodeOwnedGuard {
+                op: self.op,
+                index: self.index,
+                reattached: false
+            }
+        }
     }
 
     //pub fn elem<'child: 'tree>(&'child mut self) -> &'child mut T {
@@ -582,6 +642,7 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
         }
     }
 
+    /*
     pub fn write_child<'this, 'child: 'this>(&'this mut self, branch: usize)
         -> Result<Option<NodeWriteGuard<'tree, 'child, T, C>>, InvalidBranchIndex> {
 
@@ -595,7 +656,51 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
 
                     p1: PhantomData,
                 }))
+    }*/
+
+    unsafe fn make_child_write_guard<'n>(&mut self, branch: usize)
+        -> Result<Option<NodeWriteGuard<'tree, 'n, T, C>>, InvalidBranchIndex> {
+        self.children().as_slice().get(branch)
+            .ok_or(InvalidBranchIndex(branch))
+            .map(|child_id| child_id.index)
+            .map(|child_index| child_index
+                .map(move |child_index| NodeWriteGuard {
+                    op: self.op,
+                    index: child_index,
+
+                    p1: PhantomData,
+                }))
     }
+
+    pub fn borrow_child_write<'s>(&'s mut self, branch: usize)
+        -> Result<Option<NodeWriteGuard<'tree, 's, T, C>>, InvalidBranchIndex> {
+        unsafe {
+            self.make_child_write_guard(branch)
+        }
+    }
+
+    pub fn into_child_write(mut self, branch: usize)
+        -> Result<Option<NodeWriteGuard<'tree, 'node, T, C>>, InvalidBranchIndex> {
+        unsafe {
+            self.make_child_write_guard(branch)
+        }
+    }
+
+    pub fn into_all_children_write(mut self,
+                                   mut consumer: impl FnMut(usize, Option<NodeWriteGuard<'tree, 'node, T, C>>)) {
+        unsafe {
+            let branch_factor = {
+                let array: C = mem::uninitialized();
+                let size = array.as_slice().len();
+                mem::drop(array);
+                size
+            };
+            for branch in 0..branch_factor {
+                consumer(branch, self.make_child_write_guard(branch).unwrap())
+            }
+        }
+    }
+
 
     //pub fn take_child<'child>(&mut self, branch: usize)
     //    -> Result<Option<NodeOwnedGuard<'child, T, C>>, InvalidBranchIndex>

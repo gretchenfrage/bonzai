@@ -25,7 +25,7 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
     }
 
     fn insert_to_node(mut guard: NodeWriteGuard<T, [ChildId; 2]>, elem: T) {
-        let (node_elem, mut children) = guard.split();
+        let (node_elem, mut children) = guard.borrow_split();
         let child_branch =
             if elem > *node_elem {
                 Some(1)
@@ -35,14 +35,17 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
                 None
             };
         if let Some(child_branch) = child_branch {
-            match children.write_child(child_branch).unwrap() {
+            let mut elem = Some(elem);
+            // this would be so much nicer with NLL
+            if match children.borrow_child_write(child_branch).unwrap() {
                 Some(child_guard) => {
-                    Self::insert_to_node(child_guard, elem);
+                    Self::insert_to_node(child_guard, elem.take().unwrap());
+                    false
                 },
-                None => {
-                    children.put_child_elem(child_branch, elem).unwrap();
-                }
-            };
+                None => true,
+            } {
+                children.put_child_elem(child_branch, elem.take().unwrap()).unwrap();
+            }
         }
     }
 
@@ -146,7 +149,7 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
                 .map(|_| 1))
             .map(|leftmost_branch| {
                 // attempt to recurse on that branch
-                Self::detach_smallest(guard.children().write_child(leftmost_branch).unwrap().unwrap())
+                Self::detach_smallest(guard.children().borrow_child_write(leftmost_branch).unwrap().unwrap())
                     .unwrap_or_else(|| {
                         // if this fails, then that branch is empty, so that's our base case
                         // we detach it
