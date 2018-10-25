@@ -10,7 +10,7 @@ use pinned_vec::PinnedVec;
 
 use core::array::FixedSizeArray;
 use std::cell::{UnsafeCell, Cell};
-use std::ops::{Deref, Drop};
+use std::ops::{Deref, DerefMut, Drop};
 use std::marker::PhantomData;
 use std::ptr;
 use std::mem;
@@ -794,6 +794,79 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
 impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Send for ChildWriteGuard<'tree, 'node, T, C> {}
 impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuard<'tree, 'node, T, C> {}
 
+#[derive(Debug)]
+pub struct ChildNotFound(pub usize);
+
+#[derive(Debug)]
+pub struct HitTopOfTree;
+
+pub struct TreeWriteTraverser<'tree, T, C: FixedSizeArray<ChildId>> {
+    pub op: &'tree mut TreeOperation<'tree, T, C>,
+    index: Cell<usize>,
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'tree, T, C> {
+    fn into_write_guard(self) -> NodeWriteGuard<'tree, 'tree, T, C> {
+        unimplemented!()
+    }
+
+    fn into_read_guard(self) -> NodeReadGuard<'tree, T, C> {
+        unimplemented!()
+    }
+
+    fn is_root(&self) -> bool {
+        unimplemented!()
+    }
+
+    fn seek_parent(&self) -> Result<(), HitTopOfTree> {
+        unimplemented!()
+    }
+
+    fn has_child(&self, branch: usize) -> Result<bool, InvalidBranchIndex> {
+        unimplemented!()
+    }
+
+    fn seek_child(&self, branch: usize) -> Result<Result<(), ChildNotFound>, InvalidBranchIndex> {
+        unimplemented!()
+    }
+
+    fn detach_this(self) -> NodeOwnedGuard<'tree, T, C> {
+        unimplemented!()
+    }
+
+    fn detach_child<'s>(&'s self, branch: usize)
+        -> Result<Result<NodeOwnedGuard<'s, T, C>, ChildNotFound>, InvalidBranchIndex> {
+
+        unimplemented!()
+    }
+
+    unsafe fn access_ref(&self) -> &mut T {
+        if let &Node::Present {
+            ref elem,
+            ..
+        } = &*(&*self.op.nodes.get())[self.index.get()].get() {
+            &mut*elem.get()
+        } else {
+            unreachable!("tree write traverser ")
+        }
+    }
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> Deref for TreeWriteTraverser<'tree, T, C> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        unsafe {
+            self.access_ref()
+        }
+    }
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> DerefMut for TreeWriteTraverser<'tree, T, C> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe {
+            self.access_ref()
+        }
+    }
+}
+
 pub struct NodeReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
     node: &'tree Node<T, C>,
@@ -856,6 +929,8 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
         builder.finish()
     }
 }
+
+
 
 // TODO: iteration
 // TODO: docs and example
