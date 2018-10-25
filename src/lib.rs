@@ -374,7 +374,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
-    pub fn new_detached<'this: 'tree>(&'this self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
+    pub fn new_detached<'s: 'tree>(&'s self, elem: T) -> NodeOwnedGuard<'tree, T, C> {
         unsafe {
             // create the new node
             let node = Node::Present {
@@ -410,8 +410,7 @@ pub struct NodeWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
     p1: PhantomData<&'node mut ()>,
 }
 impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T, C> {
-    // TODO: unnecessarily complex lifetimes
-    pub fn read<'this, 'read: 'this>(&'this self) -> NodeReadGuard<'read, T, C> where 'tree: 'read {
+    pub fn read<'s: 'tree>(&'s self) -> NodeReadGuard<'s, T, C> {
         unsafe {
             NodeReadGuard::new(self.op, self.index)
         }
@@ -449,7 +448,7 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T
         }
     }
 
-    pub fn elem<'a>(&'a mut self) -> &'a mut T {
+    pub fn elem(&mut self) -> &mut T {
         self.borrow_split().0
     }
 
@@ -506,14 +505,6 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'tree, 'node, T
             }
         }
     }
-
-    //pub fn elem<'child: 'tree>(&'child mut self) -> &'child mut T {
-    //    self.split().0
-    //}
-//
-    //pub fn children<'child: 'tree>(&'child mut self) -> ChildWriteGuard<'tree, 'child, T, C> {
-    //    self.split().1
-    //}
 }
 impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard<'tree, 'node, T, C> {}
 impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'tree, 'node, T, C> {}
@@ -529,7 +520,7 @@ pub struct NodeOwnedGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     reattached: bool,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
-    pub fn read<'this, 'read: 'this>(&'this self) -> NodeReadGuard<'read, T, C> where 'tree: 'read {
+    pub fn read<'s: 'tree>(&'s self) -> NodeReadGuard<'s, T, C> {
         unsafe {
             NodeReadGuard::new(self.op, self.index)
         }
@@ -544,27 +535,13 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
         }
     }
 
-    /*
-    pub fn borrow<'this, 'borrow: 'this>(&'borrow mut self) -> NodeWriteGuard<'tree, 'borrow, T, C> {
-        NodeWriteGuard {
-            op: self.op,
-            index: self.index,
-
-            p1: PhantomData,
-        }
-    }
-    */
-
     pub fn split<'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'tree, 'b, T, C>) {
         unsafe {
             if let &Node::Present {
                 ref elem,
                 ..
             } = &*(&*self.op.nodes.get())[self.index].get() {
-                //let elem: &'borrow mut T = &mut*elem.get();
                 let elem = &mut*elem.get();
-                //let child_guard: ChildWriteGuard<'this, 'child, T, C> = ChildWriteGuard {
-                //let child_guard: ChildWriteGuard<'tree, 'borrow, T, C> = ChildWriteGuard {
                 let child_guard = ChildWriteGuard {
                     op: self.op,
                     index: self.index,
@@ -578,34 +555,13 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
         }
     }
 
-    pub fn elem<'a>(&'a mut self) -> &'a mut T {
+    pub fn elem(&mut self) -> &mut T {
         self.split().0
     }
 
     pub fn children<'a>(&'a mut self) -> ChildWriteGuard<'tree, 'a, T, C> {
         self.split().1
     }
-
-    /*
-    // TODO
-    pub fn elem<'this: 'tree, 'elem: 'this>(&'this mut self) -> &'elem mut T {
-        self.split().0
-    }
-
-    pub fn children<'this: 'tree, 'child: 'this>(&'this mut self) -> ChildWriteGuard<'tree, 'child, T, C> {
-        self.split().1
-    }
-    */
-
-    /*
-    pub fn elem<'s :'tree>(&'s mut self) -> &'s mut T {
-        self.split().0
-    }
-
-    pub fn children<'s: 'tree,>(&'s mut self) -> ChildWriteGuard<'tree, 's, T, C> {
-        self.split().1
-    }
-    */
 
     pub fn into_elem(mut self) -> T {
         unsafe {
@@ -622,8 +578,6 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
             // now we can mark ourself as reattached and drop
             self.reattached = true;
             mem::drop(self);
-
-
 
             // done
             elem
@@ -652,7 +606,6 @@ pub struct ChildWriteGuard<'tree, 'node, T, C: FixedSizeArray<ChildId>> {
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
-    //children: &'node mut C,
 }
 impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, T, C> {
     fn children(&mut self) -> &mut C {
@@ -667,22 +620,6 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
             }
         }
     }
-
-    /*
-    pub fn write_child<'this, 'child: 'this>(&'this mut self, branch: usize)
-        -> Result<Option<NodeWriteGuard<'tree, 'child, T, C>>, InvalidBranchIndex> {
-
-        self.children().as_slice().get(branch)
-            .ok_or(InvalidBranchIndex(branch))
-            .map(|child_id| child_id.index)
-            .map(|child_index| child_index
-                .map(move |child_index| NodeWriteGuard {
-                    op: self.op,
-                    index: child_index,
-
-                    p1: PhantomData,
-                }))
-    }*/
 
     unsafe fn make_child_write_guard<'n>(&mut self, branch: usize)
         -> Result<Option<NodeWriteGuard<'tree, 'n, T, C>>, InvalidBranchIndex> {
@@ -727,10 +664,6 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
         }
     }
 
-
-    //pub fn take_child<'child>(&mut self, branch: usize)
-    //    -> Result<Option<NodeOwnedGuard<'child, T, C>>, InvalidBranchIndex>
-    //    where 'tree: 'child {
     pub fn take_child(&mut self, branch: usize) -> Result<Option<NodeOwnedGuard<'tree, T, C>>, InvalidBranchIndex> {
 
         self.children().as_slice().get(branch)
@@ -927,107 +860,3 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
 // TODO: iteration
 // TODO: docs and example
 // TODO: automated test
-
-fn main() {
-    /*
-    println!("creating empty tree");
-    let mut tree: Tree<i32, [ChildId; 2]> = Tree::new();
-    let write = tree.mutate();
-    println!("{:#?}", write);
-
-    println!("inserting 0 at root");
-    write.put_root_elem(0);
-    println!("{:#?}", write);
-
-
-    {
-        println!("guarding root");
-        let mut guard = write.write_root().unwrap();
-        let (node, mut children) = guard.split();
-        println!("root node = {}", node);
-        println!("incrementing root node");
-        *node += 1;
-        println!("root node = {}", node);
-        println!("adding child 0: 2");
-        println!("{:?}", children.put_child_elem(0, 2));
-        println!("adding child 1: 3");
-        println!("{:?}", children.put_child_elem(1, 3));
-        println!("{:#?}", write);
-        println!("{:#?}", write.debug_nodes());
-    }
-
-*/
-
-
-    /*
-    let mut tree: Tree<i32, [ChildId; 2]> = Tree::new();
-    {
-        let op = tree.mutate();
-        println!("{:#?}", op);
-        println!("{:#?}", op.write_root());
-        println!("{}", op.put_root_elem(0));
-        println!("{:#?}", op);
-        {
-            let mut root_guard = op.write_root().unwrap();
-            let (root, mut root_children) = root_guard.split();
-            println!("{}", root);
-            *root += 1;
-            println!("{:?}", root_children.write_child(0));
-            println!("{:?}", root_children.write_child(1));
-            println!("{:?}", root_children.write_child(2));
-            println!("-a");
-            println!("{:?}", root_children.put_child_elem(0, 2));
-            println!("{:?}", root_children.put_child_elem(1, 3));
-            println!("{:?}", root_children.put_child_elem(0, 4));
-            println!("{:?}", root_children.put_child_elem(2, 7));
-        }
-        println!("{:#?}", op);
-        {
-            let mut root_guard = op.write_root().unwrap();
-            let (_, mut root_children) = root_guard.split();
-            let detached = root_children.take_child(1).unwrap().unwrap();
-            {
-                let mut node_0_guard = root_children.write_child(0).unwrap().unwrap();
-                let (node_0, mut node_0_children) = node_0_guard.split();
-                node_0_children.put_child_tree(1, detached).unwrap();
-                *node_0 = 42;
-            }
-        }
-        println!("{:#?}", op);
-        println!("{}", op
-            .read_root().unwrap()
-            .child(0).unwrap().unwrap()
-            .child(1).unwrap().unwrap()
-            .elem);
-        println!("{}", op
-            .write_root().unwrap()
-            .split().1.write_child(0).unwrap().unwrap()
-            .split().1.take_child(1).unwrap().unwrap()
-            .into_elem());
-        println!("a {:#?}", op);
-        {
-            let mut detached_guard = op.new_detached(10);
-            {
-                let (_, mut detached_children) = detached_guard.split();
-                detached_children.put_child_elem(0, 20).unwrap();
-                detached_children.put_child_elem(1, 30).unwrap();
-            }
-            println!("b {:#?}", detached_guard);
-            op
-                .write_root().unwrap()
-                .split().1.put_child_tree(1, detached_guard).unwrap();
-        }
-        println!("c {:#?}", op);
-    }
-
-    println!("------------------------");
-    println!("{:#?}", tree.debug_nodes());
-    //println!("{:?}", tree);
-    //println!("gggggggggggggggggggggggg");
-    tree.garbage_collect();
-    //println!("{:#?}", tree.debug_nodes());
-    //println!("{:?}", tree);
-    */
-    bst::bst_test();
-
-}

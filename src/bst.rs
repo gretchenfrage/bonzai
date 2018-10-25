@@ -159,7 +159,6 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
     }
 }
 
-//#[test]
 pub fn bst_test() {
     let mut tree: BinarySearchTree<i32> = BinarySearchTree::new();
     tree.insert(0);
