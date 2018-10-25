@@ -4,6 +4,7 @@ use std::fmt::{Debug, Formatter};
 use std::fmt;
 use std::iter::{Iterator, IntoIterator};
 use std::slice::Iter;
+use std::mem;
 
 pub struct PinnedVec<T> {
     vec: Vec<T>,
@@ -69,7 +70,7 @@ impl<T> PinnedVec<T> {
         }
     }
 
-    pub fn swap_remove(&mut self, index: usize) {
+    pub fn swap_remove(&mut self, index: usize) -> T {
         match self.len() {
             0 => {
                 // this is illegal
@@ -77,11 +78,12 @@ impl<T> PinnedVec<T> {
             },
             len if len - 1 == index => {
                 // if we're swap-removing the last element, simply pop it
-                self.pop().unwrap();
+                self.pop().unwrap()
             },
             _ => {
                 // if we're swap-removing some middle element, actually swap remove
-                self[index] = self.pop().unwrap();
+                let popped = self.pop().unwrap();
+                mem::replace(&mut self[index], popped)
             }
         }
     }

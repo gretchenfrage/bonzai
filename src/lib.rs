@@ -3,7 +3,6 @@
 
 extern crate core;
 
-//#[feature(test)]
 pub mod bst;
 mod pinned_vec;
 
@@ -34,17 +33,42 @@ impl Debug for ChildId {
 pub struct InvalidBranchIndex(pub usize);
 
 enum Node<T, C: FixedSizeArray<ChildId>> {
-    Garbage,
+    Garbage {
+        children: C,
+    },
     Present {
         elem: UnsafeCell<T>,
         parent: Cell<ParentId>,
         children: UnsafeCell<C>
     }
 }
+impl<T, C: FixedSizeArray<ChildId>> Node<T, C> {
+    fn take_elem_become_garbage(&mut self) -> T {
+        unsafe {
+            let this = ptr::read(self);
+            let (this, elem) = match this {
+                Node::Present {
+                    elem,
+                    children,
+                    ..
+                } => (Node::Garbage {
+                    children: children.into_inner()
+                }, elem.into_inner()),
+                Node::Garbage {
+                    ..
+                } => {
+                    unreachable!("node become garbage, node already is garbage");
+                },
+            };
+            ptr::write(self, this);
+            elem
+        }
+    }
+}
 impl<T: Debug, C: FixedSizeArray<ChildId> + Debug> Debug for Node<T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         match self {
-            &Node::Garbage => {
+            &Node::Garbage { .. } => {
                 f.debug_struct("Garbage")
                     .finish()
             },
@@ -114,7 +138,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
-    pub fn debug_nodes<'a>(&'a self) -> DebugNodes<'a, T, C> {
+    pub fn debug_nodes(&self) -> DebugNodes<T, C> {
         DebugNodes {
             nodes: &self.nodes
         }
@@ -146,14 +170,27 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                 }
 
                 debug_assert!(match &*(&(&*self.nodes.get())[garbage_index]).get() {
-                    &Node::Garbage => true,
+                    &Node::Garbage { .. } => true,
                     &Node::Present { .. } => false
                 });
 
                 // TODO: the children are also garbage
 
-                nodes.swap_remove(garbage_index);
+                let removed_node = nodes.swap_remove(garbage_index);
                 let relocated_new_index = garbage_index;
+
+                // mark the removed node's children for deletion
+                if let Node::Garbage {
+                    children
+                } = removed_node.into_inner() {
+                    for &child_id in children.as_slice() {
+                        if let ChildId {
+                            index: Some(child_index)
+                        } = child_id {
+                            garbage_vec.push(child_index);
+                        }
+                    }
+                } // else, it means we got here because the parent was marked
 
                 if garbage_index == relocated_new_index {
                     // we don't need to perform reattachment if we removed the last node in the vec
@@ -164,7 +201,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                 let relocated_node = &mut*(&nodes[relocated_new_index]).get();
 
                 match relocated_node {
-                    &mut Node::Garbage => {
+                    &mut Node::Garbage { .. } => {
                         garbage_vec.push(relocated_new_index);
                     }
                     &mut Node::Present {
@@ -185,7 +222,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                                         index: Some(relocated_new_index),
                                     };
                                 },
-                                &Node::Garbage => {
+                                &Node::Garbage { .. } => {
                                     unreachable!("node parent is garbage at garbage collection time");
                                 }
                             }
@@ -270,7 +307,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
 
     unsafe fn delete_root(&self, nodes_vec: &mut PinnedVec<UnsafeCell<Node<T, C>>>) -> bool {
         if let Some(former_root_index) = self.root.get() {
-            *(&mut*nodes_vec[former_root_index].get()) = Node::Garbage;
+            (&mut*nodes_vec[former_root_index].get()).take_elem_become_garbage();
             (&mut*self.garbage.get()).push(former_root_index);
             true
         } else {
@@ -575,19 +612,8 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'tree, T, C> {
             // acquire a mutable reference to the node
             let node: &mut Node<T, C> = &mut*((&*(&(&*self.op.nodes.get())[self.index])).get());
 
-            // swap it with a garbage node
-            let node = mem::replace(node, Node::Garbage);
-
-            // extract the element
-            let elem = if let Node::Present {
-                elem,
-                ..
-            } = node {
-                elem.into_inner()
-            } else {
-                unreachable!("node owned guard references garbage")
-            };
-
+            // swap it with a garbage node, extract the element
+            let elem = node.take_elem_become_garbage();
 
             // we've marked self as garbage, so we must add self to the garbage vec
             let garbage_vec = &mut*self.op.garbage.get();
@@ -608,7 +634,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'tree, T, C> 
     fn drop(&mut self) {
         if !self.reattached {
             unsafe {
-                *(&mut*((&(&*(self.op.nodes.get()))[self.index]).get())) = Node::Garbage;
+                (&mut*((&(&*(self.op.nodes.get()))[self.index]).get())).take_elem_become_garbage();
                 let garbage_vec = &mut*self.op.garbage.get();
                 garbage_vec.push(self.index);
             }
@@ -692,7 +718,7 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
             let branch_factor = {
                 let array: C = mem::uninitialized();
                 let size = array.as_slice().len();
-                mem::drop(array);
+                mem::forget(array);
                 size
             };
             for branch in 0..branch_factor {
@@ -745,7 +771,7 @@ impl<'tree, 'node, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'tree, 'node, 
         if let ChildId {
             index: Some(former_child_index)
         } = self.children().as_slice()[branch] {
-            *(&mut*nodes_vec[former_child_index].get()) = Node::Garbage;
+            (&mut*nodes_vec[former_child_index].get()).take_elem_become_garbage();
             (&mut*self.op.garbage.get()).push(former_child_index);
             true
         } else {
@@ -855,7 +881,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> NodeReadGuard<'tree, T, C> {
                 ref elem,
                 ..
             } => &*elem.get(),
-            &Node::Garbage => unreachable!("new node read guard from garbage"),
+            &Node::Garbage { .. } => unreachable!("new node read guard from garbage"),
         };
         NodeReadGuard {
             tree,
@@ -889,7 +915,7 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
                 ref children,
                 ..
             } => unsafe { (&*children.get()).as_slice().len() },
-            &Node::Garbage => unreachable!("node read guard on garbage"),
+            &Node::Garbage { .. } => unreachable!("node read guard on garbage"),
         };
         for branch in 0..num_children {
             builder.field(&format!("child_{}", branch), &self.child(branch).unwrap());
