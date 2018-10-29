@@ -170,7 +170,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                     continue;
                 }
 
-                debug_assert!(match &*(&(&*self.nodes.get())[garbage_index]).get() {
+                debug_assert!(match &*(&nodes[garbage_index]).get() {
                     &Node::Garbage { .. } => true,
                     &Node::Present { .. } => false
                 });
@@ -186,9 +186,10 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                 } = removed_node.into_inner() {
                     for &child_id in children.as_slice() {
                         if let ChildId {
-                            index: Some(_child_index)
+                            index: Some(child_index)
                         } = child_id {
                             // we've found a node to mark as garbage
+                            garbage_vec.push(child_index);
                             // TODO
 
                             //garbage_vec.push(child_index);
@@ -196,7 +197,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                     }
                 } // else, it means we got here because the parent was marked
 
-                if garbage_index == relocated_new_index {
+                if relocated_new_index == nodes.len() {
                     // we don't need to perform reattachment if we removed the last node in the vec
                     // that would actually cause a panic
                     continue;
@@ -977,6 +978,8 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
                         (&mut*children.get()).as_mut_slice()[this_branch] = ChildId {
                             index: None
                         };
+                    } else {
+                        unreachable!("tree write traverser parent is garbage");
                     }
                 },
                 ParentId::Root => {
