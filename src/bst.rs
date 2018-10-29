@@ -21,7 +21,6 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
                 op.put_root_elem(elem);
             }
         }
-        op.finish_and_gc();
     }
 
     fn insert_to_node(mut guard: NodeWriteGuard<T, [ChildId; 2]>, elem: T) {
@@ -66,11 +65,10 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
                 op.put_root_tree(replacement);
             }
         }
-        op.finish_and_gc();
     }
 
-    fn remove_from_node<'tree>(mut guard: NodeOwnedGuard<'tree, T, [ChildId; 2]>, elem: T)
-        -> Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> {
+    fn remove_from_node<'tree, 't>(mut guard: NodeOwnedGuard<'tree, 't, T, [ChildId; 2]>, elem: T)
+        -> Option<NodeOwnedGuard<'tree, 't, T, [ChildId; 2]>> {
 
         let recurse_to = {
             let node_elem = guard.split().0;
@@ -98,8 +96,8 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
             // case: removal
             match {
                 let (_, mut children) = guard.split();
-                let left: Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> = children.take_child(0).unwrap();
-                let right: Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> = children.take_child(1).unwrap();
+                let left: Option<NodeOwnedGuard<'tree, 't, T, [ChildId; 2]>> = children.take_child(0).unwrap();
+                let right: Option<NodeOwnedGuard<'tree, 't, T, [ChildId; 2]>> = children.take_child(1).unwrap();
                 (left, right)
             } {
                 (None, None) => {
@@ -137,8 +135,8 @@ impl<T: Ord + Eq> BinarySearchTree<T> {
         }
     }
 
-    fn detach_smallest<'tree, 'node>(mut guard: NodeWriteGuard<'tree, 'node, T, [ChildId; 2]>)
-        -> Option<NodeOwnedGuard<'tree, T, [ChildId; 2]>> {
+    fn detach_smallest<'op, 'node, 't>(mut guard: NodeWriteGuard<'op, 'node, 't, T, [ChildId; 2]>)
+                                   -> Option<NodeOwnedGuard<'op, 't, T, [ChildId; 2]>> {
         // if there is a leftmost branch, we can successfully detach smallest
         // otherwise, there are no children, so we fail
         guard.read()

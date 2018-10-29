@@ -66,6 +66,7 @@ impl<T> PinnedVec<T> {
         if let Some(ref mut next) = self.next {
             next.pop()
         } else {
+            // TODO: must pop from vec without triggering reallocation
             self.vec.pop()
         }
     }
