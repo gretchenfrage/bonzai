@@ -96,6 +96,7 @@ enum ParentId {
     },
     Root,
     Detached,
+    Garbage,
 }
 
 fn new_child_array<C: FixedSizeArray<ChildId>>() -> C {
@@ -158,6 +159,25 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
+    pub fn health_check(&self) -> bool {
+        true
+        //unsafe {
+        //    let mut health = true;
+        //    match self.root.get() {
+        //        Some(root_index) => {
+        //
+        //        },
+        //        None => {
+        //            if (&*self.nodes.get()).len() != 0{
+        //                eprintln!("tree has no root, but there are nodes");
+        //                healthy = false;
+        //            }
+        //        }
+        //    }
+        //    health
+        //}
+    }
+
     pub fn garbage_collect(&mut self) {
         unsafe {
             let garbage_vec = &mut*self.garbage.get();
@@ -190,6 +210,13 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                         } = child_id {
                             // we've found a node to mark as garbage
                             garbage_vec.push(child_index);
+                            if let &Node::Present {
+                                ref parent,
+                                ..
+                            } = &*nodes[child_index].get() {
+                                parent.set(ParentId::Garbage);
+                            }
+                            //(&*nodes[child_index].get()).parent.set(ParentId::Garbage);
                             // TODO
 
                             //garbage_vec.push(child_index);
@@ -197,7 +224,8 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                     }
                 } // else, it means we got here because the parent was marked
 
-                if relocated_new_index == nodes.len() {
+                let relocated_old_index = nodes.len();
+                if relocated_new_index == relocated_old_index {
                     // we don't need to perform reattachment if we removed the last node in the vec
                     // that would actually cause a panic
                     continue;
@@ -211,34 +239,67 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                     }
                     &mut Node::Present {
                         ref mut parent,
+                        ref mut children,
                         ..
-                    } => match parent.get() {
-                        ParentId::Some {
-                            parent_index,
-                            this_branch,
-                        } => {
-                            let parent_node = &*(&nodes[parent_index]).get();
-                            match parent_node {
-                                &Node::Present {
-                                    ref children,
-                                    ..
-                                } => {
-                                    (&mut*children.get()).as_mut_slice()[this_branch] = ChildId {
-                                        index: Some(relocated_new_index),
-                                    };
-                                },
-                                &Node::Garbage { .. } => {
-                                    unreachable!("node parent is garbage at garbage collection time");
+                    } => {
+                        // reconnect parent
+                        match parent.get() {
+                            ParentId::Some {
+                                parent_index,
+                                this_branch,
+                            } => {
+                                let parent_node = &*(&nodes[parent_index]).get();
+                                match parent_node {
+                                    &Node::Present {
+                                        ref children,
+                                        ..
+                                    } => {
+                                        (&mut *children.get()).as_mut_slice()[this_branch] = ChildId {
+                                            index: Some(relocated_new_index),
+                                        };
+                                    },
+                                    &Node::Garbage { .. } => {
+                                        unreachable!("node parent is garbage at garbage collection time");
+                                    }
                                 }
+                            },
+                            ParentId::Root => {
+                                self.root.set(Some(relocated_new_index));
+                            },
+                            ParentId::Garbage => (),
+                            ParentId::Detached => {
+                                unreachable!("found detached node on garbage collection sweep");
                             }
-                        },
-                        ParentId::Root => {
-                            self.root.set(Some(relocated_new_index));
-                        },
-                        ParentId::Detached => {
-                            unreachable!("found detached node on garbage collection sweep");
+                        };
+
+                        // reconnect children
+                        for (b, child_id) in (&*children.get()).as_slice().iter().enumerate() {
+                            if let &ChildId {
+                                index: Some(child_index)
+                            } = child_id {
+
+                                let child_node = &*(&nodes[child_index]).get();
+                                match child_node {
+                                    &Node::Present {
+                                        ref parent,
+                                        ..
+                                    } => {
+                                        debug_assert_eq!(parent.get(), ParentId::Some {
+                                            parent_index: relocated_old_index,
+                                            this_branch: b,
+                                        });
+                                        parent.set(ParentId::Some {
+                                            parent_index: relocated_new_index,
+                                            this_branch: b,
+                                        });
+                                    }
+                                    &Node::Garbage { .. } => {
+                                        unreachable!("node child is garbage at garbage collection time");
+                                    }
+                                };
+                            }
                         }
-                    },
+                    }
                 };
             }
         }
@@ -537,6 +598,9 @@ impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'op, 'nod
                 },
                 ParentId::Detached => {
                     unreachable!("node owned guard trying to detach node which is already detached");
+                }
+                ParentId::Garbage => {
+                    unreachable!("garbage parent node encountered outside of GC");
                 }
             };
 
@@ -904,6 +968,7 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
                     },
                     ParentId::Root => Err(HitTopOfTree),
                     ParentId::Detached => unreachable!("tree write traverser points to detached node"),
+                    ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
                 }
             } else {
                 unreachable!("tree write traverser points to garbage node")
@@ -986,7 +1051,8 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
                     // detach this from the root
                     self.op.tree.root.set(None);
                 },
-                ParentId::Detached => unreachable!("tree write traverser points to detached")
+                ParentId::Detached => unreachable!("tree write traverser points to detached"),
+                ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
             };
 
             // create the guard
@@ -1070,6 +1136,7 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
                     } => Ok(this_branch),
                     ParentId::Root => Err(ThisIsRoot),
                     ParentId::Detached => unreachable!("tree write traverser points to detached node"),
+                    ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
                 }
             } else {
                 unreachable!("tree write traverser points to garbage")
