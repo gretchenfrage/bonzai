@@ -3,8 +3,6 @@
 
 extern crate core;
 
-
-//pub mod bst;
 mod pinned_vec;
 
 use pinned_vec::PinnedVec;
@@ -19,6 +17,14 @@ use std::fmt::{Debug, Formatter};
 use std::fmt;
 
 const EXTENSION_SIZE: usize = 6;
+
+pub trait IntoReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
+    fn into_read_guard(self) -> NodeReadGuard<'tree, T, C>;
+}
+
+pub trait IntoWriteGuard<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> {
+    fn into_write_guard(self) -> NodeWriteGuard<'op, 'node, 't, T, C>;
+}
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct ChildId {
@@ -195,8 +201,6 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                     &Node::Present { .. } => false
                 });
 
-                // TODO: the children are also garbage
-
                 let removed_node = nodes.swap_remove(garbage_index);
                 let relocated_new_index = garbage_index;
 
@@ -216,10 +220,6 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                             } = &*nodes[child_index].get() {
                                 parent.set(ParentId::Garbage);
                             }
-                            //(&*nodes[child_index].get()).parent.set(ParentId::Garbage);
-                            // TODO
-
-                            //garbage_vec.push(child_index);
                         }
                     }
                 } // else, it means we got here because the parent was marked
@@ -448,17 +448,6 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
             })
     }
 
-    // TODO: could you give it a write guard from another tree?
-    // TODO: macro
-    /*
-    pub fn traverse_from<'s: 'tree>(&'s mut self, guard: NodeReadGuard<'tree, T, C>)
-        -> TreeWriteTraverser<'s, T, C> {
-        TreeWriteTraverser {
-            op: self,
-            index: Cell::new(guard.index)
-        }
-    }
-    */
     pub fn traverse_from<'s>(&'s mut self, index: NodeIndex) -> Option<TreeWriteTraverser<'tree, 's, T, C>> {
         if index.index < unsafe { (&*self.nodes.get()).len() } {
             Some(TreeWriteTraverser {
@@ -507,19 +496,6 @@ pub struct NodeWriteGuard<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> {
     p1: PhantomData<&'node mut ()>,
 }
 impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'op, 'node, 't, T, C> {
-    pub fn read<'s: 'op>(&'s self) -> NodeReadGuard<'s, T, C> {
-        unsafe {
-            NodeReadGuard::new(self.op, self.index)
-        }
-    }
-
-    // TODO: is this lifetime right?
-    pub fn into_read(self) -> NodeReadGuard<'node, T, C> where 'op: 'node {
-        unsafe {
-            NodeReadGuard::new(self.op, self.index)
-        }
-    }
-
     unsafe fn unsafe_split<'a>(&mut self) -> (&'a mut T, ChildWriteGuard<'op, 'a, 't, T, C>) {
         if let &Node::Present {
             ref elem,
@@ -617,7 +593,35 @@ impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard
 impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'op, 'node, 't, T, C> {}
 impl<'op: 't, 'node, 't, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuard<'op, 'node, 't, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        self.read().fmt(f)
+        self.into_read_guard().fmt(f)
+    }
+}
+impl <'s: 'op, 'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
+for &'s NodeWriteGuard<'op, 'node, 't, T, C> {
+    fn into_read_guard(self) -> NodeReadGuard<'s, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.op, self.index)
+        }
+    }
+}
+impl<'op: 't + 'node, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'node, T, C>
+for NodeWriteGuard<'op, 'node, 't, T, C> {
+    fn into_read_guard(self) -> NodeReadGuard<'node, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.op, self.index)
+        }
+    }
+}
+impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 'node, 't, T, C>
+for NodeWriteGuard<'op, 'node, 't, T, C> {
+    fn into_write_guard(self) -> NodeWriteGuard<'op, 'node, 't, T, C> {
+        self
+    }
+}
+impl<'s: 'node, 'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 's, 't, T, C>
+for &'s mut NodeWriteGuard<'op, 'node, 't, T, C> {
+    fn into_write_guard(self) -> NodeWriteGuard<'op, 's, 't, T, C> {
+        unimplemented!()
     }
 }
 
@@ -627,21 +631,6 @@ pub struct NodeOwnedGuard<'op: 't, 't, T, C: FixedSizeArray<ChildId>> {
     reattached: bool,
 }
 impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'op, 't, T, C> {
-    pub fn read<'s: 'op>(&'s self) -> NodeReadGuard<'s, T, C> {
-        unsafe {
-            NodeReadGuard::new(self.op, self.index)
-        }
-    }
-
-    pub fn borrow<'s>(&'s mut self) -> NodeWriteGuard<'op, 't, 's, T, C> {
-        NodeWriteGuard {
-            op: self.op,
-            index: self.index,
-
-            p1: PhantomData,
-        }
-    }
-
     pub fn split<'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'op, 'b, 't, T, C>) {
         unsafe {
             if let &Node::Present {
@@ -704,7 +693,26 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'op, 't
 }
 impl<'op: 't, 't, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeOwnedGuard<'op, 't, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        self.read().fmt(f)
+        self.into_read_guard().fmt(f)
+    }
+}
+impl<'s: 'op, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
+for &'s NodeOwnedGuard<'op, 't, T, C> {
+    fn into_read_guard(self) -> NodeReadGuard<'s, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.op, self.index)
+        }
+    }
+}
+impl<'s, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 't, 's, T, C>
+for &'s mut NodeOwnedGuard<'op, 't, T, C> {
+    fn into_write_guard(self) -> NodeWriteGuard<'op, 't, 's, T, C> {
+        NodeWriteGuard {
+            op: self.op,
+            index: self.index,
+
+            p1: PhantomData,
+        }
     }
 }
 
@@ -905,54 +913,42 @@ impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuar
 pub struct ChildNotFound(pub usize);
 
 #[derive(Debug)]
-pub struct HitTopOfTree;
+pub enum NoParent {
+    Root,
+    Detached
+}
 
-#[derive(Debug)]
-pub struct ThisIsRoot;
+#[derive(Debug, Eq, PartialEq)]
+pub enum AboveMe {
+    Parent,
+    Root,
+    Detached,
+}
 
 pub struct TreeWriteTraverser<'op: 't, 't, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op mut TreeOperation<'t, T, C>,
     index: Cell<usize>,
 }
 impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, C> {
-    pub fn into_write_guard(self) -> NodeWriteGuard<'op, 'op, 't, T, C> {
-        NodeWriteGuard {
-            op: self.op,
-            index: self.index.get(),
-
-            p1: PhantomData,
-        }
-    }
-
-    pub fn into_read_guard(self) -> NodeReadGuard<'op, T, C> {
-        unsafe {
-            NodeReadGuard::new(self.op.tree, self.index.get())
-        }
-    }
-
-    pub fn as_write_guard<'s>(&'s mut self) -> NodeWriteGuard<'s, 's, 't, T, C> {
-        NodeWriteGuard {
-            op: self.op,
-            index: self.index.get(),
-
-            p1: PhantomData,
-        }
-    }
-
-    pub fn is_root(&self) -> bool {
+    pub fn above_me(&self) -> AboveMe {
         unsafe {
             if let &mut Node::Present {
                 ref parent,
                 ..
             } = self.access_node_ref() {
-                parent.get() == ParentId::Root
+                match parent.get() {
+                    ParentId::Some { .. } => AboveMe::Parent,
+                    ParentId::Root => AboveMe::Root,
+                    ParentId::Detached => AboveMe::Detached,
+                    ParentId::Garbage => unreachable!("encountered garbage parent outside of GC"),
+                }
             } else {
                 unreachable!("tree write traverser points to garbage node")
             }
         }
     }
 
-    pub fn seek_parent(&self) -> Result<(), HitTopOfTree> {
+    pub fn seek_parent(&self) -> Result<(), NoParent> {
         unsafe {
             if let &mut Node::Present {
                 ref parent,
@@ -966,8 +962,8 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
                         self.index.set(parent_index);
                         Ok(())
                     },
-                    ParentId::Root => Err(HitTopOfTree),
-                    ParentId::Detached => unreachable!("tree write traverser points to detached node"),
+                    ParentId::Root => Err(NoParent::Root),
+                    ParentId::Detached => Err(NoParent::Detached),
                     ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
                 }
             } else {
@@ -1123,7 +1119,7 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
         }
     }
 
-    pub fn this_branch_index(&self) -> Result<usize, ThisIsRoot> {
+    pub fn this_branch_index(&self) -> Result<usize, NoParent> {
         unsafe {
             if let &mut Node::Present {
                 ref parent,
@@ -1134,8 +1130,8 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
                         this_branch,
                         ..
                     } => Ok(this_branch),
-                    ParentId::Root => Err(ThisIsRoot),
-                    ParentId::Detached => unreachable!("tree write traverser points to detached node"),
+                    ParentId::Root => Err(NoParent::Root),
+                    ParentId::Detached => Err(NoParent::Detached),
                     ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
                 }
             } else {
@@ -1157,6 +1153,44 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> DerefMut for TreeWriteTraverser
     fn deref_mut(&mut self) -> &mut T {
         unsafe {
             self.access_elem_ref()
+        }
+    }
+}
+impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'op, T, C>
+for TreeWriteTraverser<'op, 't, T, C> {
+    fn into_read_guard(self) -> NodeReadGuard<'op, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.op.tree, self.index.get())
+        }
+    }
+}
+impl<'s: 'op, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
+for &'s TreeWriteTraverser<'op, 't, T, C> {
+    fn into_read_guard(self) -> NodeReadGuard<'s, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.op.tree, self.index.get())
+        }
+    }
+}
+impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 'op, 't, T, C>
+for TreeWriteTraverser<'op, 't, T, C> {
+    fn into_write_guard(self) -> NodeWriteGuard<'op, 'op, 't, T, C> {
+        NodeWriteGuard {
+            op: self.op,
+            index: self.index.get(),
+
+            p1: PhantomData,
+        }
+    }
+}
+impl<'s: 'op, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'s, 's, 't, T, C>
+for &'s mut TreeWriteTraverser<'op, 't, T, C> {
+    fn into_write_guard(self) -> NodeWriteGuard<'s, 's, 't, T, C> {
+        NodeWriteGuard {
+            op: self.op,
+            index: self.index.get(),
+
+            p1: PhantomData,
         }
     }
 }
@@ -1232,12 +1266,160 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
     }
 }
 
+pub struct TreeReadTraverser<'tree, T, C: FixedSizeArray<ChildId>> {
+    pub tree: &'tree Tree<T, C>,
+    pub elem: &'tree T,
+    index: usize,
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
+    unsafe fn new(tree: &'tree Tree<T, C>, index: usize) -> Self {
+        let node = &*(&*tree.nodes.get())[index].get();
+        let elem = match node {
+            &Node::Present {
+                ref elem,
+                ..
+            } => &*elem.get(),
+            &Node::Garbage { .. } => unreachable!("new node read guard from garbage"),
+        };
+        TreeReadTraverser {
+            tree,
+            elem,
+            index,
+        }
+    }
+
+    pub fn above_me(&self) -> AboveMe {
+        unsafe {
+            if let &Node::Present {
+                ref parent,
+                ..
+            } = self.access_node_ref() {
+                match parent.get() {
+                    ParentId::Some { .. } => AboveMe::Parent,
+                    ParentId::Root => AboveMe::Root,
+                    ParentId::Detached => AboveMe::Detached,
+                    ParentId::Garbage => unreachable!("encountered garbage parent outside of GC"),
+                }
+            } else {
+                unreachable!("tree write traverser points to garbage node")
+            }
+        }
+    }
+
+    pub fn parent(&self) -> Result<Self, NoParent> {
+        unsafe {
+            if let &Node::Present {
+                ref parent,
+                ..
+            } = self.access_node_ref() {
+                match parent.get() {
+                    ParentId::Some {
+                        parent_index,
+                        ..
+                    } => Ok(Self::new(self.tree, parent_index)),
+                    ParentId::Root => Err(NoParent::Root),
+                    ParentId::Detached => Err(NoParent::Detached),
+                    ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
+                }
+            } else {
+                unreachable!("tree write traverser points to garbage node")
+            }
+        }
+    }
+
+    pub fn seek_parent(&mut self) -> Result<(), NoParent> {
+        *self = self.parent()?;
+        Ok(())
+    }
+
+    pub fn has_child(&self, branch: usize) -> Result<bool, InvalidBranchIndex> {
+        unsafe {
+            if let &Node::Present {
+                ref children,
+                ..
+            } = self.access_node_ref() {
+                (&*children.get()).as_slice()
+                    .get(branch)
+                    .ok_or(InvalidBranchIndex(branch))
+                    .map(|child_id| child_id.index.is_some())
+            } else {
+                unreachable!("tree write traverser points to garbage node")
+            }
+        }
+    }
+
+    pub fn child(&self, branch: usize) -> Result<Result<Self, ChildNotFound>, InvalidBranchIndex> {
+        unsafe {
+            if let &Node::Present {
+                ref children,
+                ..
+            } = self.access_node_ref() {
+                (&*children.get()).as_slice()
+                    .get(branch)
+                    .ok_or(InvalidBranchIndex(branch))
+                    .map(|child_id| match child_id.index {
+                        Some(child_index) => Ok(Self::new(self.tree, child_index)),
+                        None => Err(ChildNotFound(branch)),
+                    })
+            } else {
+                unreachable!("tree write traverser points to garbage node")
+            }
+        }
+    }
+
+    pub fn seek_child(&mut self, branch: usize) -> Result<Result<(), ChildNotFound>, InvalidBranchIndex> {
+        match self.child(branch) {
+            Ok(Ok(child)) => {
+                *self = child;
+                Ok(Ok(()))
+            },
+            Ok(Err(e)) => Ok(Err(e)),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn this_branch_index(&self) -> Result<usize, NoParent> {
+        unsafe {
+            if let &Node::Present {
+                ref parent,
+                ..
+            } = self.access_node_ref() {
+                match parent.get() {
+                    ParentId::Some {
+                        this_branch,
+                        ..
+                    } => Ok(this_branch),
+                    ParentId::Root => Err(NoParent::Root),
+                    ParentId::Detached => Err(NoParent::Detached),
+                    ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
+                }
+            } else {
+                unreachable!("tree write traverser points to garbage")
+            }
+        }
+    }
+
+    unsafe fn access_node_ref(&self) -> &Node<T, C> {
+        &*((&*self.tree.nodes.get())[self.index].get())
+    }
+}
+impl<'t, T, C: FixedSizeArray<ChildId>> Deref for TreeReadTraverser<'t, T, C> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.elem
+    }
+}
+impl<'s: 'tree, 'tree, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'tree, T, C>
+for &'s TreeReadTraverser<'tree, T, C> {
+    fn into_read_guard(self) -> NodeReadGuard<'tree, T, C> {
+        unsafe {
+            NodeReadGuard::new(self.tree, self.index)
+        }
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct NodeIndex {
     index: usize,
 }
-
-
-// TODO: iteration
-// TODO: docs and example
-// TODO: automated test
