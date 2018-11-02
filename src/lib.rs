@@ -20,14 +20,17 @@ use std::fmt;
 
 const EXTENSION_SIZE: usize = 6;
 
+/// Types that can be converted into a NodeReadGuard.
 pub trait IntoReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     fn into_read_guard(self) -> NodeReadGuard<'tree, T, C>;
 }
 
+/// Types that can be convered into a NodeWriteGuard.
 pub trait IntoWriteGuard<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 'node, 't, T, C>;
 }
 
+/// An opaque type used for genericity over branch factor.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct ChildId {
     index: Option<usize>
@@ -38,6 +41,8 @@ impl Debug for ChildId {
     }
 }
 
+/// Error type for performing operations on a branch index that does not exist in the
+/// given branch factor.
 #[derive(Debug, Copy, Clone)]
 pub struct InvalidBranchIndex(pub usize);
 
@@ -119,6 +124,8 @@ fn new_child_array<C: FixedSizeArray<ChildId>>() -> C {
     }
 }
 
+/// A struct which borrows from the tree, and allows the debug printing of the tree's
+/// node vector, for debugging purposes.
 pub struct DebugNodes<'a, T, C: FixedSizeArray<ChildId>> {
     nodes: &'a UnsafeCell<PinnedVec<UnsafeCell<Node<T, C>>>>,
 }
@@ -134,12 +141,21 @@ impl<'a, T: Debug, C: FixedSizeArray<ChildId> + Debug> Debug for DebugNodes<'a, 
     }
 }
 
+/// The top-level tree type, generic over element type and branch factor.
+///
+/// The `Tree`, and nearly all components borrowed from the tree, is generic over two types:
+/// the element type, and a sized array of `ChildId`. The element type, `T`, is stored for
+/// every node in the tree. Each node may have any combination of children, with any child
+/// index that is a valid index of the `ChildId` array.
+///
+/// For example, a binary search tree set of `i32` could be represented as a `Tree<i32, [ChildId; 2]>`.
 pub struct Tree<T, C: FixedSizeArray<ChildId>> {
     nodes: UnsafeCell<PinnedVec<UnsafeCell<Node<T, C>>>>,
     root: Cell<Option<usize>>,
     garbage: UnsafeCell<Vec<usize>>,
 }
 impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
+    /// Create a new, empty tree.
     pub fn new() -> Self {
         Tree {
             nodes: UnsafeCell::new(PinnedVec::new(EXTENSION_SIZE)),
@@ -148,12 +164,14 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
+    /// Get a view of the tree than can be debug printed to see the node vec.
     pub fn debug_nodes(&self) -> DebugNodes<T, C> {
         DebugNodes {
             nodes: &self.nodes
         }
     }
 
+    /// Read the root of the tree, if it exists.
     pub fn read_root<'tree>(&'tree self) -> Option<NodeReadGuard<'tree, T, C>> {
         self.root.get()
             .map(|root_index| unsafe {
@@ -161,25 +179,40 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
             })
     }
 
-    pub fn traverse_root<'tree>(&'tree self) -> Option<TreeReadTraverser<'tree, T, C>> {
+    /// Read-traverse the tree, starting at the root, if it exists.
+    pub fn traverse_read_root<'tree>(&'tree self) -> Option<TreeReadTraverser<'tree, T, C>> {
         self.root.get()
             .map(|root_index| unsafe {
                 TreeReadTraverser::new(self, root_index)
             })
     }
 
+    /// Begin an operation which can mutate the tree.
     pub fn operation<'tree>(&'tree mut self) -> TreeOperation<'tree, T, C> {
         TreeOperation {
             tree: self
         }
     }
 
+    /// Reallocate the node vec, so that the capacity is no larger than its length.
+    pub fn shrink_to_fit(&mut self) {
+        unsafe {
+            (&mut *self.nodes.get()).shrink_to_fit();
+        }
+    }
+
+    /// Garbage collect the node vec. This is an O(N) operation, where N is the number of garbage
+    /// nodes, and it is automatically done whenever a TreeOperation is dropped. Garbage nodes
+    /// will be swap-removed from the node vec, and nodes' child and parent indices will be
+    /// updated to maintain the validity of the tree.
+    ///
+    /// This will cause all non-dropped garbage nodes to be dropped.
     pub fn garbage_collect(&mut self) {
         unsafe {
             let garbage_vec = &mut*self.garbage.get();
             let nodes = &mut*self.nodes.get();
 
-            nodes.compress();
+            nodes.defragment();
 
             while let Some(garbage_index) = garbage_vec.pop() {
                 if garbage_index >= nodes.len() {
@@ -303,10 +336,15 @@ impl<T: Debug, C: FixedSizeArray<ChildId>> Debug for Tree<T, C> {
     }
 }
 
+/// A `TreeOperation` is a type which borrows mutably from the `Tree`, and allows for modification to that
+/// tree. While a `TreeOperation` exists, the access to the tree can only be single-threaded. This allows
+/// many operations to mutate the tree with only a immutable reference to the `TreeOperation`, directly or
+/// indirectly.
 pub struct TreeOperation<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree mut Tree<T, C>,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
+    /// Write to the root of the tree, if it exists.
     pub fn write_root<'s>(&'s mut self) -> Option<NodeWriteGuard<'s, 's, 'tree, T, C>> {
         let self_immutable: &Self = self;
 
@@ -319,6 +357,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
             })
     }
 
+    /// Detach the root of the tree, if it exists.
     pub fn take_root<'s>(&'s mut self) -> Option<NodeOwnedGuard<'s, 'tree, T, C>> {
         self.tree.root.get()
             .map(move |root_index| {
@@ -357,6 +396,8 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
+    /// Put an element as the root of the tree, returning whether some existing root was
+    /// overridden.
     pub fn put_root_elem(&mut self, elem: T) -> bool {
         unsafe {
             // unsafely create the new children array
@@ -386,6 +427,8 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
+    /// Put a detached subtree as the root of the tree, returning whether some existing
+    /// root was overridden.
     pub fn put_root_tree<'s>(&mut self, mut subtree: NodeOwnedGuard<'s, 'tree, T, C>) -> bool {
         unsafe {
             let nodes_vec = &mut*self.tree.nodes.get();
@@ -416,6 +459,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
+    /// Begin write-traversing from the root of the tree, if the root exists.
     pub fn traverse_root<'s>(&'s mut self) -> Option<TreeWriteTraverser<'tree, 's, T, C>> {
         self.tree.root.get()
             .map(move |root_index| TreeWriteTraverser {
@@ -424,6 +468,9 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
             })
     }
 
+    /// Begin write-traversing from some arbitrary node in the tree.
+    ///
+    /// Instead of using this method, use the traverse_from! macro.
     pub fn traverse_from<'s>(&'s mut self, index: NodeIndex) -> Option<TreeWriteTraverser<'tree, 's, T, C>> {
         if index.index < unsafe { (&*self.tree.nodes.get()).len() } {
             Some(TreeWriteTraverser {
@@ -435,6 +482,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
+    /// Create a new detached subtree.
     pub fn new_detached<'s>(&'s self, elem: T) -> NodeOwnedGuard<'s, 'tree, T, C> {
         unsafe {
             // create the new node
@@ -459,10 +507,12 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
+    /// Get a view of the tree than can be debug printed to see the node vec.
     pub fn debug_nodes(&self) -> DebugNodes<T, C> {
         self.tree.debug_nodes()
     }
 
+    /// Read the root of the tree, if it exists.
     pub fn read_root<'s: 'tree>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
         self.tree.read_root()
     }
@@ -480,6 +530,14 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for TreeOperation<'tree, T, C> {
     }
 }
 
+/// A `NodeWriteGuard` is a type which holds mutable access to a subset of the tree (a node and all its
+/// children, recursively). The `NodeWriteGuard` can be simultaneously borrowed into a mutable reference
+/// to the element (`&mut T`) and a `ChildWriteGuard`. The `ChildWriteGuard` has the ability to alter the
+/// node's children. Additionally, a `NodeWriteGuard` can be turned into a `NodeOwnedGuard`, detaching the
+/// guarded subtree.
+///
+/// A `NodeWriteGuard` cannot outlive the parent node guard (if the node is root, it cannot
+/// outlive the tree).
 pub struct NodeWriteGuard<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op TreeOperation<'t, T, C>,
     index: usize,
@@ -507,26 +565,31 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'op, 'no
         }
     }
 
+    /// Split this write guard into mutable access to the element and the children, borrowing from self.
     pub fn borrow_split<'a>(&'a mut self) -> (&'a mut T, ChildWriteGuard<'op, 'a, 't, T, C>) {
         unsafe {
             self.unsafe_split()
         }
     }
 
+    /// Split this write guard into mutable access to the elemtn and the children, consuming self.
     pub fn into_split(mut self) -> (&'node mut T, ChildWriteGuard<'op, 'node, 't, T, C>) {
         unsafe {
             self.unsafe_split()
         }
     }
 
+    /// Mutably access the element.
     pub fn elem(&mut self) -> &mut T {
         self.borrow_split().0
     }
 
+    /// Mutable access the children.
     pub fn children<'a>(&'a mut self) -> ChildWriteGuard<'op, 'a, 't, T, C> {
         self.borrow_split().1
     }
 
+    /// Detach this node from the parent, consuming self, and produced a detached subtree.
     pub fn detach(self) -> NodeOwnedGuard<'op, 't, T, C> {
         unsafe {
             // find and detach the parent
@@ -616,12 +679,26 @@ for &'s mut NodeWriteGuard<'op, 'node, 't, T, C> {
     }
 }
 
+/// A owning handle to a detached subtree.
+///
+/// Normally, a node in a tree is owned by its parent. The root node has a special status, where its parent
+/// is considered to be root. However, during the lifetime of a `TreeOperation`, a subtree can be detached
+/// from its parent, and it can be considered to be owned by a `NodeOwnedGuard`. In this case, the
+/// `NodeOwnedGuard` can outlive the guard for its parent. This subtree can be reattached to the main tree
+/// as the child of another node. During the lifetime of the `NodeOwnedGuard`, it is possible to mutate it,
+/// as if it were part of the main tree. Alternatively, a `NodeOwnedGuard` can be transformed into its
+/// inner element, marking the node and all its children as garbage.
+///
+/// When a `NodeOwnedGuard` is dropped, and its subtree is marked as garbage, the elements' destructors will
+/// run sometime between the dropping of the `NodeOwnedGuard` and the dropping of the `TreeOperation`.
 pub struct NodeOwnedGuard<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op TreeOperation<'t, T, C>,
     index: usize,
     reattached: bool,
 }
 impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'op, 't, T, C> {
+    /// Split this owned guard into mutable access to the element and children of the root of this
+    /// detached subtree.
     pub fn split<'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'op, 'b, 't, T, C>) {
         unsafe {
             if let &Node::Present {
@@ -642,14 +719,17 @@ impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'op, 't, T, C> 
         }
     }
 
+    /// Mutably access the root element of this detached subtree.
     pub fn elem(&mut self) -> &mut T {
         self.split().0
     }
 
+    /// Mutably access the children of the root of this detached subtree.
     pub fn children<'a>(&'a mut self) -> ChildWriteGuard<'op, 'a, 't, T, C> {
         self.split().1
     }
 
+    /// Consume self, turning this node into garbage, and returning ownership of the element.
     pub fn into_elem(mut self) -> T {
         unsafe {
             // acquire a mutable reference to the node
@@ -707,6 +787,20 @@ for &'s mut NodeOwnedGuard<'op, 't, T, C> {
     }
 }
 
+/// An error type for streaming all children, when the output array is of the wrong size.
+#[derive(Debug)]
+pub struct WrongChildrenNum {
+    pub expected_num: usize,
+    pub actual_num: usize,
+}
+
+/// Mutable access to a node's children.
+///
+/// A `ChildWriteGuard` represents mutable access to a node's children. It can be borrowed from both a
+/// `NodeWriteGuard` and a `NodeOwnedGuard`. The `ChildWriteGuard` can borrow out a `NodeWriteGuard` to
+/// its child, or even several different children simultaneously. Additionally, a `ChildWriteGuard` can
+/// put an element as a particular child (marking any previous child subtree as garbage), or even attach
+/// an entire detached subtree (a `NodeOwnedGuard`) as one of its children.
 pub struct ChildWriteGuard<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op TreeOperation<'t, T, C>,
     index: usize,
@@ -741,6 +835,7 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'n
                 }))
     }
 
+    /// Borrow a write guard for a certain child, if that child exists.
     pub fn borrow_child_write<'s>(&'s mut self, branch: usize)
         -> Result<Option<NodeWriteGuard<'op, 's, 't, T, C>>, InvalidBranchIndex> {
         unsafe {
@@ -748,6 +843,7 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'n
         }
     }
 
+    /// Turn into the write guard for a certain child, if that child exists.
     pub fn into_child_write(mut self, branch: usize)
         -> Result<Option<NodeWriteGuard<'op, 'node, 't, T, C>>, InvalidBranchIndex> {
         unsafe {
@@ -755,8 +851,10 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'n
         }
     }
 
-    pub fn into_all_children_write(mut self,
-                                   mut consumer: impl FnMut(usize, Option<NodeWriteGuard<'op, 'node, 't, T, C>>)) {
+    /// Stream all child write guards into an array, borrowing from self.
+    pub fn borrow_all_children<'s>(&'s mut self,
+                                   out: &mut [Option<NodeWriteGuard<'op, 's, 't, T, C>>])
+        -> Result<(), WrongChildrenNum> {
         unsafe {
             let branch_factor = {
                 let array: C = mem::uninitialized();
@@ -764,12 +862,45 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'n
                 mem::forget(array);
                 size
             };
-            for branch in 0..branch_factor {
-                consumer(branch, self.make_child_write_guard(branch).unwrap())
+            if branch_factor == out.len() {
+                for b in 0..branch_factor {
+                    out[b] = self.make_child_write_guard(b).unwrap();
+                }
+                Ok(())
+            } else {
+                Err(WrongChildrenNum {
+                    expected_num: branch_factor,
+                    actual_num: out.len()
+                })
             }
         }
     }
 
+    /// Stream all child write guards into an array, consuming from self.
+    pub fn into_all_children(mut self, out: &mut [Option<NodeWriteGuard<'op, 'node, 't, T, C>>])
+        -> Result<(), WrongChildrenNum> {
+        unsafe {
+            let branch_factor = {
+                let array: C = mem::uninitialized();
+                let size = array.as_slice().len();
+                mem::forget(array);
+                size
+            };
+            if branch_factor == out.len() {
+                for b in 0..branch_factor {
+                    out[b] = self.make_child_write_guard(b).unwrap();
+                }
+                Ok(())
+            } else {
+                Err(WrongChildrenNum {
+                    expected_num: branch_factor,
+                    actual_num: out.len()
+                })
+            }
+        }
+    }
+
+    /// Detach a child, turning it into a detached subtree, if that child exists.
     pub fn take_child(&mut self, branch: usize) -> Result<Option<NodeOwnedGuard<'op, 't, T, C>>, InvalidBranchIndex> {
 
         self.children().as_slice().get(branch)
@@ -818,6 +949,7 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'n
         }
     }
 
+    /// Put an element as a certain child, returning whether any existing child was overridden.
     pub fn put_child_elem(&mut self, branch: usize, elem: T) -> Result<bool, InvalidBranchIndex> {
         unsafe {
             // short-circuit if the branch is invalid
@@ -857,7 +989,9 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'n
         }
     }
 
-    pub fn put_child_tree(&mut self, branch: usize, mut subtree: NodeOwnedGuard<'op, 't, T, C>) -> Result<bool, InvalidBranchIndex> {
+    /// Attach a detached subtree as a certain child, returning whether any existing child was overridden.
+    pub fn put_child_tree(&mut self, branch: usize, mut subtree: NodeOwnedGuard<'op, 't, T, C>)
+        -> Result<bool, InvalidBranchIndex> {
         unsafe {
             // short-circuit if the branch is invalid
             if branch >= self.children().as_slice().len() {
@@ -900,27 +1034,44 @@ impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'n
 impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> !Send for ChildWriteGuard<'op, 'node, 't, T, C> {}
 impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuard<'op, 'node, 't, T, C> {}
 
+/// Error type for attempting to detach a child that doesn't exist.
 #[derive(Debug)]
 pub struct ChildNotFound(pub usize);
 
+/// Error type for trying to traverse upwards when enable.
 #[derive(Debug)]
 pub enum NoParent {
     Root,
     Detached
 }
 
+/// Possibilities for what owns a certain node.
 #[derive(Debug, Eq, PartialEq)]
 pub enum AboveMe {
+    /// Another node is above this node.
     Parent,
+    /// This node is the root of the main tree.
     Root,
+    /// This node is the root of a detached subtree.
     Detached,
 }
 
+/// While a `NodeWriteGuard` holds mutable access to a subtree (a node and its children, recursively), a
+/// `TreeWriteTraverser` holds mutable access to an entire tree. This allows a `TreeWriteTraverser` to
+/// seek the parent node, which a `NodeWriteGuard` cannot do. However, this also means that a
+/// `TreeWriteTraverser` cannot exist at the same time as any other guards.
+///
+/// Beyond that difference, a `TreeWriteTraverser` can be used similarly to a `NodeWriteGuard`.
+/// A `TreeWriteTraverser` can even be turned or mutably borrowed into a `NodeWriteGuard`.
+///
+/// A `TreeOperation` and some type of node guard can be conveniently turned into a `TreeWriteTraverser`
+/// with the `traverse_from!` macro.
 pub struct TreeWriteTraverser<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op mut TreeOperation<'t, T, C>,
     index: Cell<usize>,
 }
 impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, C> {
+    /// What is above the current node.
     pub fn above_me(&self) -> AboveMe {
         unsafe {
             if let &mut Node::Present {
@@ -939,6 +1090,7 @@ impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T,
         }
     }
 
+    /// Attempt to point this traverser to the parent.
     pub fn seek_parent(&self) -> Result<(), NoParent> {
         unsafe {
             if let &mut Node::Present {
@@ -963,6 +1115,7 @@ impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T,
         }
     }
 
+    /// Does the given child exist.
     pub fn has_child(&self, branch: usize) -> Result<bool, InvalidBranchIndex> {
         unsafe {
             if let &mut Node::Present {
@@ -979,6 +1132,7 @@ impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T,
         }
     }
 
+    /// Attempt to point this traverser to the given child.
     pub fn seek_child(&self, branch: usize) -> Result<Result<(), ChildNotFound>, InvalidBranchIndex> {
         unsafe {
             if let &mut Node::Present {
@@ -1002,6 +1156,7 @@ impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T,
         }
     }
 
+    /// Detach the pointed-at node, consuming this traverser, and producing a detached subtree.
     pub fn detach_this(self) -> NodeOwnedGuard<'op, 't, T, C> {
         unsafe {
             // detach the parent from this
@@ -1051,6 +1206,7 @@ impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T,
         }
     }
 
+    /// Attempt to detach a child node, producing a detached subtree.
     pub fn detach_child<'s>(&'s self, branch: usize)
         -> Result<Result<NodeOwnedGuard<'op, 't, T, C>, ChildNotFound>, InvalidBranchIndex> {
         unsafe {
@@ -1110,6 +1266,7 @@ impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T,
         }
     }
 
+    /// If the pointed-at node has a parent, what is the branch index of this node.
     pub fn this_branch_index(&self) -> Result<usize, NoParent> {
         unsafe {
             if let &mut Node::Present {
@@ -1186,6 +1343,10 @@ for &'s mut TreeWriteTraverser<'op, 't, T, C> {
     }
 }
 
+/// A `NodeReadGuard` is a type which holds immutable access to a subset of the tree. Because a
+/// `NodeReadGuard` doesn't mutably borrow anything, it does not need to split into a `ChildWriteGuard`
+/// and `&mut T`. Instead, the `NodeReadGuard` immutably dereferences to a `T`, and its children
+/// can be accessed directly with a method.
 pub struct NodeReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
     node: &'tree Node<T, C>,
@@ -1257,6 +1418,10 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
     }
 }
 
+/// The `TreeReadTraverser` is to the `NodeReadGuard` as the `TreeWriteTraverser` is to the `NodeWriteGuard`.
+/// While the `NodeReadGuard` holds immutable access to a subset of the tree, a `TreeReadTraverser` holds
+/// immutable access to the entire tree. This allows the `TreeReadTraverser` to safely traverse to
+/// its parent node.
 pub struct TreeReadTraverser<'tree, T, C: FixedSizeArray<ChildId>> {
     pub tree: &'tree Tree<T, C>,
     pub elem: &'tree T,
@@ -1410,15 +1575,33 @@ for &'s TreeReadTraverser<'tree, T, C> {
     }
 }
 
+/// An opaque type which represents the index of a node in a tree. Created for the
+/// traverse_from! and traverse_read_from! macros.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct NodeIndex {
     index: usize,
 }
 
+/// Given a TreeOperation and some type of guard which borrows from that tree and implements
+/// IntoReadGuard, produce a TreeWriteTraverser that starts at that node.
+///
+/// For this to compile, called IntoReadGuard::into_read_guard on the second argument must
+/// relinquish all borrowship of the TreeOperation. In other words, pass the node guard by
+/// value, not reference.
 #[macro_export]
 macro_rules! traverse_from {
     ( $op:expr, $node:expr  ) => {{
         let index = $node.into_read_guard().index();
         $op.traverse_from(index).unwrap()
+    }}
+}
+
+/// Given a Tree and some type of guard which borrows from that tree and implements
+/// IntoReadGuard, produce a TreeReadTraverser that starts at that node.
+#[macro_export]
+macro_rules! traverse_read_from {
+    ( $op:expr, $node:expr  ) => {{
+        let index = $node.into_read_guard().index();
+        $op.traverse_read_from(index).unwrap()
     }}
 }

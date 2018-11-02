@@ -95,5 +95,19 @@ seek the parent node, which a `NodeWriteGuard` cannot do. However, this also mea
 Beyond that difference, a `TreeWriteTraverser` can be used similarly to a `NodeWriteGuard`.
 A `TreeWriteTraverser` can even be turned or mutably borrowed into a `NodeWriteGuard`.
 
- TODO: we need to stream out differently the tree op and the root guard, and mutably 
- borrow from the root guard
+A `TreeOperation` and some type of node guard can be conveniently turned into a `TreeWriteTraverser`
+with the `traverse_from!` macro.
+
+### NodeReadGuard
+
+A `NodeReadGuard` is a type which holds immutable access to a subset of the tree. Because a 
+`NodeReadGuard` doesn't mutably borrow anything, it does not need to split into a `ChildWriteGuard`
+and `&mut T`. Instead, the `NodeReadGuard` immutably dereferences to a `T`, and its children 
+can be accessed directly with a method.
+
+### TreeReadTraverser
+
+The `TreeReadTraverser` is to the `NodeReadGuard` as the `TreeWriteTraverser` is to the `NodeWriteGuard`.
+While the `NodeReadGuard` holds immutable access to a subset of the tree, a `TreeReadTraverser` holds 
+immutable access to the entire tree. This allows the `TreeReadTraverser` to safely traverse to 
+its parent node.

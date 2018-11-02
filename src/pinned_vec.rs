@@ -13,7 +13,7 @@ pub struct PinnedVec<T> {
 }
 
 impl<T> PinnedVec<T> {
-    pub fn compress(&mut self) {
+    pub fn defragment(&mut self) {
         let mut option_curr_link = self.next.take();
         while let Some(curr_link) = option_curr_link {
             let curr_link = *curr_link;
@@ -25,6 +25,9 @@ impl<T> PinnedVec<T> {
             self.vec.extend(curr_vec.into_iter());
             option_curr_link = curr_next;
         }
+    }
+
+    pub fn shrink_to_fit(&mut self) {
         self.vec.shrink_to_fit();
     }
 
