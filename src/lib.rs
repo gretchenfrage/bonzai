@@ -24,7 +24,7 @@ pub trait IntoReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     fn into_read_guard(self) -> NodeReadGuard<'tree, T, C>;
 }
 
-pub trait IntoWriteGuard<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> {
+pub trait IntoWriteGuard<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 'node, 't, T, C>;
 }
 
@@ -307,7 +307,7 @@ pub struct TreeOperation<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree mut Tree<T, C>,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
-    pub fn write_root<'s: 'tree>(&'s self) -> Option<NodeWriteGuard<'s, 's, 'tree, T, C>> {
+    pub fn write_root<'s>(&'s mut self) -> Option<NodeWriteGuard<'s, 's, 'tree, T, C>> {
         let self_immutable: &Self = self;
 
         self_immutable.tree.root.get()
@@ -319,7 +319,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
             })
     }
 
-    pub fn take_root<'s: 'tree>(&'s self) -> Option<NodeOwnedGuard<'s, 'tree, T, C>> {
+    pub fn take_root<'s>(&'s mut self) -> Option<NodeOwnedGuard<'s, 'tree, T, C>> {
         self.tree.root.get()
             .map(move |root_index| {
                 // detach the parent
@@ -347,7 +347,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
             })
     }
 
-    unsafe fn delete_root(&self, nodes_vec: &mut PinnedVec<UnsafeCell<Node<T, C>>>) -> bool {
+    unsafe fn delete_root(&mut self, nodes_vec: &mut PinnedVec<UnsafeCell<Node<T, C>>>) -> bool {
         if let Some(former_root_index) = self.tree.root.get() {
             (&mut*nodes_vec[former_root_index].get()).take_elem_become_garbage();
             (&mut*self.tree.garbage.get()).push(former_root_index);
@@ -357,7 +357,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
-    pub fn put_root_elem(&self, elem: T) -> bool {
+    pub fn put_root_elem(&mut self, elem: T) -> bool {
         unsafe {
             // unsafely create the new children array
             let child_children: C = new_child_array();
@@ -386,7 +386,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
-    pub fn put_root_tree<'s: 'tree>(&self, mut subtree: NodeOwnedGuard<'s, 'tree, T, C>) -> bool {
+    pub fn put_root_tree<'s>(&mut self, mut subtree: NodeOwnedGuard<'s, 'tree, T, C>) -> bool {
         unsafe {
             let nodes_vec = &mut*self.tree.nodes.get();
 
@@ -416,7 +416,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
-    pub fn traverse_root<'s: 'tree>(&'s mut self) -> Option<TreeWriteTraverser<'tree, 's, T, C>> {
+    pub fn traverse_root<'s>(&'s mut self) -> Option<TreeWriteTraverser<'tree, 's, T, C>> {
         self.tree.root.get()
             .map(move |root_index| TreeWriteTraverser {
                 op: self,
@@ -435,7 +435,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         }
     }
 
-    pub fn new_detached<'s: 'tree>(&'s self, elem: T) -> NodeOwnedGuard<'s, 'tree, T, C> {
+    pub fn new_detached<'s>(&'s self, elem: T) -> NodeOwnedGuard<'s, 'tree, T, C> {
         unsafe {
             // create the new node
             let node = Node::Present {
@@ -480,13 +480,13 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> Drop for TreeOperation<'tree, T, C> {
     }
 }
 
-pub struct NodeWriteGuard<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> {
+pub struct NodeWriteGuard<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op TreeOperation<'t, T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
 }
-impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'op, 'node, 't, T, C> {
+impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'op, 'node, 't, T, C> {
     unsafe fn unsafe_split<'a>(&mut self) -> (&'a mut T, ChildWriteGuard<'op, 'a, 't, T, C>) {
         if let &Node::Present {
             ref elem,
@@ -580,9 +580,9 @@ impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> NodeWriteGuard<'op, 'nod
         }
     }
 }
-impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard<'op, 'node, 't, T, C> {}
-impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'op, 'node, 't, T, C> {}
-impl<'op: 't, 'node, 't, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuard<'op, 'node, 't, T, C> {
+impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> !Send for NodeWriteGuard<'op, 'node, 't, T, C> {}
+impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> !Sync for NodeWriteGuard<'op, 'node, 't, T, C> {}
+impl<'op, 'node, 't: 'op, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWriteGuard<'op, 'node, 't, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         self.into_read_guard().fmt(f)
     }
@@ -603,7 +603,7 @@ for NodeWriteGuard<'op, 'node, 't, T, C> {
         }
     }
 }
-impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 'node, 't, T, C>
+impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 'node, 't, T, C>
 for NodeWriteGuard<'op, 'node, 't, T, C> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 'node, 't, T, C> {
         self
@@ -616,12 +616,12 @@ for &'s mut NodeWriteGuard<'op, 'node, 't, T, C> {
     }
 }
 
-pub struct NodeOwnedGuard<'op: 't, 't, T, C: FixedSizeArray<ChildId>> {
+pub struct NodeOwnedGuard<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op TreeOperation<'t, T, C>,
     index: usize,
     reattached: bool,
 }
-impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'op, 't, T, C> {
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'op, 't, T, C> {
     pub fn split<'b>(&'b mut self) -> (&'b mut T, ChildWriteGuard<'op, 'b, 't, T, C>) {
         unsafe {
             if let &Node::Present {
@@ -671,7 +671,7 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> NodeOwnedGuard<'op, 't, T, C> {
         }
     }
 }
-impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'op, 't, T, C> {
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'op, 't, T, C> {
     fn drop(&mut self) {
         if !self.reattached {
             unsafe {
@@ -682,12 +682,12 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> Drop for NodeOwnedGuard<'op, 't
         }
     }
 }
-impl<'op: 't, 't, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeOwnedGuard<'op, 't, T, C> {
+impl<'op, 't: 'op, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeOwnedGuard<'op, 't, T, C> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         self.into_read_guard().fmt(f)
     }
 }
-impl<'s: 'op, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
+impl<'s, 'op: 's, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
 for &'s NodeOwnedGuard<'op, 't, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'s, T, C> {
         unsafe {
@@ -695,7 +695,7 @@ for &'s NodeOwnedGuard<'op, 't, T, C> {
         }
     }
 }
-impl<'s, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 't, 's, T, C>
+impl<'s: 'op, 'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 't, 's, T, C>
 for &'s mut NodeOwnedGuard<'op, 't, T, C> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 't, 's, T, C> {
         NodeWriteGuard {
@@ -707,13 +707,13 @@ for &'s mut NodeOwnedGuard<'op, 't, T, C> {
     }
 }
 
-pub struct ChildWriteGuard<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> {
+pub struct ChildWriteGuard<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op TreeOperation<'t, T, C>,
     index: usize,
 
     p1: PhantomData<&'node mut ()>,
 }
-impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'node, 't, T, C> {
+impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'node, 't, T, C> {
     fn children(&mut self) -> &mut C {
         unsafe {
             if let &Node::Present {
@@ -897,8 +897,8 @@ impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> ChildWriteGuard<'op, 'no
         }
     }
 }
-impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> !Send for ChildWriteGuard<'op, 'node, 't, T, C> {}
-impl<'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuard<'op, 'node, 't, T, C> {}
+impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> !Send for ChildWriteGuard<'op, 'node, 't, T, C> {}
+impl<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> !Sync for ChildWriteGuard<'op, 'node, 't, T, C> {}
 
 #[derive(Debug)]
 pub struct ChildNotFound(pub usize);
@@ -916,11 +916,11 @@ pub enum AboveMe {
     Detached,
 }
 
-pub struct TreeWriteTraverser<'op: 't, 't, T, C: FixedSizeArray<ChildId>> {
+pub struct TreeWriteTraverser<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     pub op: &'op mut TreeOperation<'t, T, C>,
     index: Cell<usize>,
 }
-impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, C> {
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, C> {
     pub fn above_me(&self) -> AboveMe {
         unsafe {
             if let &mut Node::Present {
@@ -1131,7 +1131,7 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> TreeWriteTraverser<'op, 't, T, 
         }
     }
 }
-impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> Deref for TreeWriteTraverser<'op, 't, T, C> {
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> Deref for TreeWriteTraverser<'op, 't, T, C> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -1140,14 +1140,14 @@ impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> Deref for TreeWriteTraverser<'o
         }
     }
 }
-impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> DerefMut for TreeWriteTraverser<'op, 't, T, C> {
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> DerefMut for TreeWriteTraverser<'op, 't, T, C> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe {
             self.access_elem_ref()
         }
     }
 }
-impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'op, T, C>
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'op, T, C>
 for TreeWriteTraverser<'op, 't, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'op, T, C> {
         unsafe {
@@ -1155,7 +1155,7 @@ for TreeWriteTraverser<'op, 't, T, C> {
         }
     }
 }
-impl<'s: 'op, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
+impl<'s: 'op, 'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
 for &'s TreeWriteTraverser<'op, 't, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'s, T, C> {
         unsafe {
@@ -1163,7 +1163,7 @@ for &'s TreeWriteTraverser<'op, 't, T, C> {
         }
     }
 }
-impl<'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 'op, 't, T, C>
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 'op, 't, T, C>
 for TreeWriteTraverser<'op, 't, T, C> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 'op, 't, T, C> {
         NodeWriteGuard {
@@ -1174,7 +1174,7 @@ for TreeWriteTraverser<'op, 't, T, C> {
         }
     }
 }
-impl<'s: 'op, 'op: 't, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'s, 's, 't, T, C>
+impl<'s: 'op, 'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'s, 's, 't, T, C>
 for &'s mut TreeWriteTraverser<'op, 't, T, C> {
     fn into_write_guard(self) -> NodeWriteGuard<'s, 's, 't, T, C> {
         NodeWriteGuard {
