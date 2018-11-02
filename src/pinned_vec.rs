@@ -25,6 +25,7 @@ impl<T> PinnedVec<T> {
             self.vec.extend(curr_vec.into_iter());
             option_curr_link = curr_next;
         }
+        self.vec.shrink_to_fit();
     }
 
     pub fn new(extension_size: usize) -> Self {
