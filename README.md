@@ -32,7 +32,7 @@ to verify the validity of operations on trees, while using very few heap allocat
 
 ### Unsupported at this time:
 
-- Multithreaded operations
+- Multithreaded mutation
 - Use on stable release channel
 - Unbounded/dynamic branch factor
 - Two-way traversal of detached subtree
