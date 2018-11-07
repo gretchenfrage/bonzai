@@ -513,7 +513,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
     }
 
     /// Read the root of the tree, if it exists.
-    pub fn read_root<'s: 'tree>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
+    pub fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
         self.tree.read_root()
     }
 }
@@ -1331,7 +1331,7 @@ for TreeWriteTraverser<'op, 't, T, C> {
         }
     }
 }
-impl<'s: 'op, 'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'s, 's, 't, T, C>
+impl<'s, 'op: 's, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'s, 's, 't, T, C>
 for &'s mut TreeWriteTraverser<'op, 't, T, C> {
     fn into_write_guard(self) -> NodeWriteGuard<'s, 's, 't, T, C> {
         NodeWriteGuard {
@@ -1347,6 +1347,7 @@ for &'s mut TreeWriteTraverser<'op, 't, T, C> {
 /// `NodeReadGuard` doesn't mutably borrow anything, it does not need to split into a `ChildWriteGuard`
 /// and `&mut T`. Instead, the `NodeReadGuard` immutably dereferences to a `T`, and its children
 /// can be accessed directly with a method.
+#[derive(Copy, Clone)]
 pub struct NodeReadGuard<'tree, T, C: FixedSizeArray<ChildId>> {
     tree: &'tree Tree<T, C>,
     node: &'tree Node<T, C>,
@@ -1415,6 +1416,11 @@ impl<'tree, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeReadGuard<'tree,
             builder.field(&format!("child_{}", branch), &self.child(branch).unwrap());
         }
         builder.finish()
+    }
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'tree, T, C> for NodeReadGuard<'tree, T, C> {
+    fn into_read_guard(self) -> NodeReadGuard<'tree, T, C> {
+        self
     }
 }
 
@@ -1591,6 +1597,7 @@ pub struct NodeIndex {
 #[macro_export]
 macro_rules! traverse_from {
     ( $op:expr, $node:expr  ) => {{
+        use bonzai::IntoReadGuard;
         let index = $node.into_read_guard().index();
         $op.traverse_from(index).unwrap()
     }}
@@ -1601,6 +1608,7 @@ macro_rules! traverse_from {
 #[macro_export]
 macro_rules! traverse_read_from {
     ( $op:expr, $node:expr  ) => {{
+        use bonzai::IntoReadGuard;
         let index = $node.into_read_guard().index();
         $op.traverse_read_from(index).unwrap()
     }}
