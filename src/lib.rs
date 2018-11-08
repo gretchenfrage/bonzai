@@ -30,6 +30,15 @@ pub trait IntoWriteGuard<'op, 'node, 't: 'op, T, C: FixedSizeArray<ChildId>> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 'node, 't, T, C>;
 }
 
+/// Types that allow the root to be read.
+pub trait ReadRoot<T, C: FixedSizeArray<ChildId>> {
+    fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>>;
+}
+
+pub trait GetElemMut<T> {
+    fn get_elem_mut(&mut self, index: NodeIndex) -> Option<&mut T>;
+}
+
 /// An opaque type used for genericity over branch factor.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct ChildId {
@@ -171,6 +180,7 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
+    /*
     /// Read the root of the tree, if it exists.
     pub fn read_root<'tree>(&'tree self) -> Option<NodeReadGuard<'tree, T, C>> {
         self.root.get()
@@ -178,6 +188,9 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                 NodeReadGuard::new(self, root_index)
             })
     }
+    */
+    //TODO
+
 
     /// Read-traverse the tree, starting at the root, if it exists.
     pub fn traverse_read_root<'tree>(&'tree self) -> Option<TreeReadTraverser<'tree, T, C>> {
@@ -193,6 +206,33 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
             tree: self
         }
     }
+
+    /*
+    pub fn get_elem_mut(&mut self, index: NodeIndex) -> Option<&mut T> {
+        unsafe {
+            if index.index < (&*self.nodes.get()).len() {
+                match &*(&*self.nodes.get())[index.index].get() {
+                    &Node::Present {
+                        ref elem,
+                        ..
+                    } => Some(&mut *elem.get()),
+                    &Node::Garbage { .. } => None
+                }
+            } else {
+                None
+            }
+        }
+        /*
+        if index.index < unsafe { (&*self.tree.nodes.get()).len() } {
+            Some(TreeWriteTraverser {
+                op: self,
+                index: Cell::new(index.index),
+            })
+        } else {
+            None
+        }*/
+    }
+    */
 
     /// Reallocate the node vec, so that the capacity is no larger than its length.
     pub fn shrink_to_fit(&mut self) {
@@ -324,6 +364,31 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                         }
                     }
                 };
+            }
+        }
+    }
+}
+impl<T, C: FixedSizeArray<ChildId>> ReadRoot<T, C> for Tree<T, C> {
+    fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
+        self.root.get()
+            .map(|root_index| unsafe {
+                NodeReadGuard::new(self, root_index)
+            })
+    }
+}
+impl<T, C: FixedSizeArray<ChildId>> GetElemMut<T> for Tree<T, C> {
+    fn get_elem_mut(&mut self, index: NodeIndex) -> Option<&mut T> {
+        unsafe {
+            if index.index < (&*self.nodes.get()).len() {
+                match &*(&*self.nodes.get())[index.index].get() {
+                    &Node::Present {
+                        ref elem,
+                        ..
+                    } => Some(&mut *elem.get()),
+                    &Node::Garbage { .. } => None
+                }
+            } else {
+                None
             }
         }
     }
@@ -471,7 +536,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
     /// Begin write-traversing from some arbitrary node in the tree.
     ///
     /// Instead of using this method, use the traverse_from! macro.
-    pub fn traverse_from<'s>(&'s mut self, index: NodeIndex) -> Option<TreeWriteTraverser<'tree, 's, T, C>> {
+    pub fn traverse_from<'s>(&'s mut self, index: NodeIndex) -> Option<TreeWriteTraverser<'s, 'tree, T, C>> {
         if index.index < unsafe { (&*self.tree.nodes.get()).len() } {
             Some(TreeWriteTraverser {
                 op: self,
@@ -512,8 +577,16 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         self.tree.debug_nodes()
     }
 
+    /*
     /// Read the root of the tree, if it exists.
     pub fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
+        self.tree.read_root()
+    }
+    */
+    // TODO
+}
+impl<'tree, T, C: FixedSizeArray<ChildId>> ReadRoot<T, C> for TreeOperation<'tree, T, C> {
+    fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
         self.tree.read_root()
     }
 }
@@ -650,7 +723,7 @@ impl<'op, 'node, 't: 'op, T: Debug, C: FixedSizeArray<ChildId>> Debug for NodeWr
         self.into_read_guard().fmt(f)
     }
 }
-impl <'s: 'op, 'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
+impl <'s, 'op: 's, 'node, 't: 'op + 'node, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
 for &'s NodeWriteGuard<'op, 'node, 't, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'s, T, C> {
         unsafe {
@@ -658,7 +731,7 @@ for &'s NodeWriteGuard<'op, 'node, 't, T, C> {
         }
     }
 }
-impl<'op: 't + 'node, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'node, T, C>
+impl<'op: 'node, 'node, 't: 'op + 'node, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'node, T, C>
 for NodeWriteGuard<'op, 'node, 't, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'node, T, C> {
         unsafe {
@@ -672,7 +745,7 @@ for NodeWriteGuard<'op, 'node, 't, T, C> {
         self
     }
 }
-impl<'s: 'node, 'op: 't, 'node, 't, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 's, 't, T, C>
+impl<'s, 'op: 'node, 'node: 's, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 's, 't, T, C>
 for &'s mut NodeWriteGuard<'op, 'node, 't, T, C> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 's, 't, T, C> {
         unimplemented!()
@@ -775,9 +848,9 @@ for &'s NodeOwnedGuard<'op, 't, T, C> {
         }
     }
 }
-impl<'s: 'op, 'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 't, 's, T, C>
+impl<'s, 'op: 's, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWriteGuard<'op, 's, 't, T, C>
 for &'s mut NodeOwnedGuard<'op, 't, T, C> {
-    fn into_write_guard(self) -> NodeWriteGuard<'op, 't, 's, T, C> {
+    fn into_write_guard(self) -> NodeWriteGuard<'op, 's, 't, T, C> {
         NodeWriteGuard {
             op: self.op,
             index: self.index,
@@ -1312,7 +1385,7 @@ for TreeWriteTraverser<'op, 't, T, C> {
         }
     }
 }
-impl<'s: 'op, 'op, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
+impl<'s, 'op: 's, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'s, T, C>
 for &'s TreeWriteTraverser<'op, 't, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'s, T, C> {
         unsafe {
@@ -1572,7 +1645,7 @@ impl<'t, T, C: FixedSizeArray<ChildId>> Deref for TreeReadTraverser<'t, T, C> {
         self.elem
     }
 }
-impl<'s: 'tree, 'tree, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'tree, T, C>
+impl<'s, 'tree: 's, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'tree, T, C>
 for &'s TreeReadTraverser<'tree, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'tree, T, C> {
         unsafe {
@@ -1611,5 +1684,14 @@ macro_rules! traverse_read_from {
         use bonzai::IntoReadGuard;
         let index = $node.into_read_guard().index();
         $op.traverse_read_from(index).unwrap()
+    }}
+}
+
+#[macro_export]
+macro_rules! get_elem_mut {
+    ( $tree:expr, $node:expr ) => {{
+        use bonzai::{IntoReadGuard, GetElemMut};
+        let index = $node.into_read_guard().index();
+        $tree.get_elem_mut(index).unwrap()
     }}
 }
