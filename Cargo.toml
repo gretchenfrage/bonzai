@@ -5,7 +5,7 @@ authors = ["Phoenix <kahlo.phoenix@gmail.com>"]
 description = "An abstraction for optimizing the memory layout and pointer aliasing of trees."
 readme = "README.md"
 repository = "https://github.com/gretchenfrage/bonzai.git"
-categories = ["data structures"]
+categories = ["data-structures"]
 license = "MIT"
 
 [dependencies]
