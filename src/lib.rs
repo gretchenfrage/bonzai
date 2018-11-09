@@ -35,6 +35,7 @@ pub trait ReadRoot<T, C: FixedSizeArray<ChildId>> {
     fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>>;
 }
 
+/// Types that allow a certain node index to be mutably accessed.
 pub trait GetElemMut<T> {
     fn get_elem_mut(&mut self, index: NodeIndex) -> Option<&mut T>;
 }
@@ -180,7 +181,6 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
         }
     }
 
-    /*
     /// Read the root of the tree, if it exists.
     pub fn read_root<'tree>(&'tree self) -> Option<NodeReadGuard<'tree, T, C>> {
         self.root.get()
@@ -188,9 +188,6 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                 NodeReadGuard::new(self, root_index)
             })
     }
-    */
-    //TODO
-
 
     /// Read-traverse the tree, starting at the root, if it exists.
     pub fn traverse_read_root<'tree>(&'tree self) -> Option<TreeReadTraverser<'tree, T, C>> {
@@ -206,33 +203,6 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
             tree: self
         }
     }
-
-    /*
-    pub fn get_elem_mut(&mut self, index: NodeIndex) -> Option<&mut T> {
-        unsafe {
-            if index.index < (&*self.nodes.get()).len() {
-                match &*(&*self.nodes.get())[index.index].get() {
-                    &Node::Present {
-                        ref elem,
-                        ..
-                    } => Some(&mut *elem.get()),
-                    &Node::Garbage { .. } => None
-                }
-            } else {
-                None
-            }
-        }
-        /*
-        if index.index < unsafe { (&*self.tree.nodes.get()).len() } {
-            Some(TreeWriteTraverser {
-                op: self,
-                index: Cell::new(index.index),
-            })
-        } else {
-            None
-        }*/
-    }
-    */
 
     /// Reallocate the node vec, so that the capacity is no larger than its length.
     pub fn shrink_to_fit(&mut self) {
@@ -577,13 +547,11 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
         self.tree.debug_nodes()
     }
 
-    /*
+
     /// Read the root of the tree, if it exists.
     pub fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
         self.tree.read_root()
     }
-    */
-    // TODO
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> ReadRoot<T, C> for TreeOperation<'tree, T, C> {
     fn read_root<'s>(&'s self) -> Option<NodeReadGuard<'s, T, C>> {
@@ -1687,6 +1655,9 @@ macro_rules! traverse_read_from {
     }}
 }
 
+/// Given some type of tree access which implements GetElemMut, for which mutable access is available,
+/// and some type of guard which borrows from that tree and implements IntoReadGuard, produce a
+/// mutable reference to the guarded element.
 #[macro_export]
 macro_rules! get_elem_mut {
     ( $tree:expr, $node:expr ) => {{
