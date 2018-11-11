@@ -256,8 +256,6 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                         } = child_id {
                             // we've found a node to mark as garbage
                             garbage_vec.push(child_index);
-                            // TODO: garbage recursing
-                            println!("garbage recursing");
                             if let &Node::Present {
                                 ref parent,
                                 ..
