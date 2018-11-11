@@ -231,7 +231,16 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
 
                 debug_assert!(match &*(&nodes[garbage_index]).get() {
                     &Node::Garbage { .. } => true,
-                    &Node::Present { .. } => false
+                    &Node::Present {
+                        ref parent,
+                        ..
+                    } => {
+                        if let ParentId::Garbage = parent.get() {
+                            true
+                        } else {
+                            false
+                        }
+                    }
                 });
 
                 let removed_node = nodes.swap_remove(garbage_index);
@@ -247,6 +256,8 @@ impl<T, C: FixedSizeArray<ChildId>> Tree<T, C> {
                         } = child_id {
                             // we've found a node to mark as garbage
                             garbage_vec.push(child_index);
+                            // TODO: garbage recursing
+                            println!("garbage recursing");
                             if let &Node::Present {
                                 ref parent,
                                 ..
@@ -392,8 +403,9 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
             })
     }
 
-    /// Detach the root of the tree, if it exists.
-    pub fn take_root<'s>(&'s mut self) -> Option<NodeOwnedGuard<'s, 'tree, T, C>> {
+    /// Detach the root of the tree, if it exists. This cannot exist with mutable access
+    /// to the root.
+    pub fn take_root<'s>(&'s self) -> Option<NodeOwnedGuard<'s, 'tree, T, C>> {
         self.tree.root.get()
             .map(move |root_index| {
                 // detach the parent
@@ -491,6 +503,46 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeOperation<'tree, T, C> {
 
             // done
             deleted
+        }
+    }
+
+    /// Attempt to put a subtree as the root, given only an immutable reference to self.
+    /// This is designed for the scenario of detaching, modifying, and then reattaching
+    /// the root of the tree. However, unlike the other put_root methods, this method
+    /// will fail if there is already any root tree, to prevent any possible existing
+    /// references to the root tree from becoming invalid.
+    pub fn try_put_root_tree<'s>(&'s self, mut subtree: NodeOwnedGuard<'s, 'tree, T, C>)
+        -> Result<(), RootTreeAlreadyPresent<'s, 'tree, T, C>> {
+
+        unsafe {
+            if self.tree.root.get().is_some() {
+                Err(RootTreeAlreadyPresent {
+                    attempted_to_put: subtree,
+                })
+            } else {
+                let nodes_vec = &mut *self.tree.nodes.get();
+
+                // attach the root
+                self.tree.root.set(Some(subtree.index));
+
+                // attach the parent
+                if let &Node::Present {
+                    ref parent,
+                    ..
+                } = &*nodes_vec[subtree.index].get() {
+                    debug_assert_eq!(parent.get(), ParentId::Detached);
+                    parent.set(ParentId::Root);
+                } else {
+                    unreachable!("put root tree references garbage");
+                }
+
+                // drop the NodeOwnedGuard without triggering it to mark the node as garbage
+                subtree.reattached = true;
+                mem::drop(subtree);
+
+                // done
+                Ok(())
+            }
         }
     }
 
@@ -717,6 +769,16 @@ impl<'s, 'op: 'node, 'node: 's, 't: 'op, T, C: FixedSizeArray<ChildId>> IntoWrit
 for &'s mut NodeWriteGuard<'op, 'node, 't, T, C> {
     fn into_write_guard(self) -> NodeWriteGuard<'op, 's, 't, T, C> {
         unimplemented!()
+    }
+}
+
+/// Error type for try put root tree.
+pub struct RootTreeAlreadyPresent<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> {
+    pub attempted_to_put: NodeOwnedGuard<'op, 't, T, C>,
+}
+impl<'op, 't: 'op, T, C: FixedSizeArray<ChildId>> Debug for RootTreeAlreadyPresent<'op, 't, T, C> {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        f.write_str("RootTreeAlreadyPresent")
     }
 }
 
@@ -1470,8 +1532,12 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'tree, T, C> for NodeRe
 /// immutable access to the entire tree. This allows the `TreeReadTraverser` to safely traverse to
 /// its parent node.
 pub struct TreeReadTraverser<'tree, T, C: FixedSizeArray<ChildId>> {
-    pub tree: &'tree Tree<T, C>,
-    pub elem: &'tree T,
+    inner: Cell<TreeReadTraverserInner<&'tree Tree<T, C>, &'tree T>>,
+}
+#[derive(Copy, Clone)]
+struct TreeReadTraverserInner<A: Copy, B: Copy> {
+    pub tree: A,
+    pub elem: B,
     index: usize,
 }
 impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
@@ -1485,10 +1551,20 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
             &Node::Garbage { .. } => unreachable!("new node read guard from garbage"),
         };
         TreeReadTraverser {
-            tree,
-            elem,
-            index,
+            inner: Cell::new(TreeReadTraverserInner {
+                tree,
+                elem,
+                index,
+            })
         }
+    }
+
+    pub fn tree(&self) -> &'tree Tree<T, C> {
+        self.inner.get().tree
+    }
+
+    pub fn elem(&self) -> &'tree T {
+        self.inner.get().elem
     }
 
     pub fn above_me(&self) -> AboveMe {
@@ -1519,7 +1595,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
                     ParentId::Some {
                         parent_index,
                         ..
-                    } => Ok(Self::new(self.tree, parent_index)),
+                    } => Ok(Self::new(self.inner.get().tree, parent_index)),
                     ParentId::Root => Err(NoParent::Root),
                     ParentId::Detached => Err(NoParent::Detached),
                     ParentId::Garbage => unreachable!("garbage parent node encountered outside of GC"),
@@ -1530,8 +1606,8 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
         }
     }
 
-    pub fn seek_parent(&mut self) -> Result<(), NoParent> {
-        *self = self.parent()?;
+    pub fn seek_parent(&self) -> Result<(), NoParent> {
+        self.inner.set(self.parent()?.inner.get());
         Ok(())
     }
 
@@ -1561,7 +1637,7 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
                     .get(branch)
                     .ok_or(InvalidBranchIndex(branch))
                     .map(|child_id| match child_id.index {
-                        Some(child_index) => Ok(Self::new(self.tree, child_index)),
+                        Some(child_index) => Ok(Self::new(self.inner.get().tree, child_index)),
                         None => Err(ChildNotFound(branch)),
                     })
             } else {
@@ -1570,10 +1646,10 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
         }
     }
 
-    pub fn seek_child(&mut self, branch: usize) -> Result<Result<(), ChildNotFound>, InvalidBranchIndex> {
+    pub fn seek_child(&self, branch: usize) -> Result<Result<(), ChildNotFound>, InvalidBranchIndex> {
         match self.child(branch) {
             Ok(Ok(child)) => {
-                *self = child;
+                self.inner.set(child.inner.get());
                 Ok(Ok(()))
             },
             Ok(Err(e)) => Ok(Err(e)),
@@ -1603,21 +1679,21 @@ impl<'tree, T, C: FixedSizeArray<ChildId>> TreeReadTraverser<'tree, T, C> {
     }
 
     unsafe fn access_node_ref(&self) -> &Node<T, C> {
-        &*((&*self.tree.nodes.get())[self.index].get())
+        &*((&*self.inner.get().tree.nodes.get())[self.inner.get().index].get())
     }
 }
 impl<'t, T, C: FixedSizeArray<ChildId>> Deref for TreeReadTraverser<'t, T, C> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        self.elem
+        self.inner.get().elem
     }
 }
 impl<'s, 'tree: 's, T, C: FixedSizeArray<ChildId>> IntoReadGuard<'tree, T, C>
 for &'s TreeReadTraverser<'tree, T, C> {
     fn into_read_guard(self) -> NodeReadGuard<'tree, T, C> {
         unsafe {
-            NodeReadGuard::new(self.tree, self.index)
+            NodeReadGuard::new(self.inner.get().tree, self.inner.get().index)
         }
     }
 }
