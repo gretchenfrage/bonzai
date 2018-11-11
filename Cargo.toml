@@ -1,6 +1,6 @@
 [package]
 name = "bonzai"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Phoenix <kahlo.phoenix@gmail.com>"]
 description = "An abstraction for optimizing the memory layout and pointer aliasing of trees."
 readme = "README.md"

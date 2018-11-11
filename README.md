@@ -37,6 +37,21 @@ to verify the validity of operations on trees, while using very few heap allocat
 - Unbounded/dynamic branch factor
 - Two-way traversal of detached subtree
 
+### Example, performance test
+
+The [bonzai-nbst](https://github.com/gretchenfrage/bonzai-nbst) repository is a rust executable which contains implementations of a 
+naive binary search tree (no balancing), using bonzai in one, and heap allocations in the other.
+[The bonzai-based implementation.](https://github.com/gretchenfrage/bonzai-nbst/blob/master/src/bst/bonzai.rs)
+
+I tested the two implementations with 10,000,000 random tree operations, on a windows 10 laptop. To test it in a real-world scenario with 
+chaotic heap use, I plugged it into a fork of the [magog roguelike](https://github.com/rsaarelm/magog) (which I am not associated 
+with), such that they run in the same process. While this test is very unscientific, bonzai demonstrated a clear performance
+improvement:
+
+- bonzai: 15,786 ms
+- boxes: 21,338 ms
+
+
 ### Tree<T, C>
 
 The `Tree`, and nearly all components borrowed from the tree, is generic over two types: 
